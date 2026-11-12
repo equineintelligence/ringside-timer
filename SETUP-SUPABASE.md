@@ -203,8 +203,32 @@ To see who has signed up: **Authentication → Users**. You can delete a user th
 - See published shows: **Table Editor → shows** (or `select name, show_date, live_updated_at from public.shows order by created_at desc;`).
 - Remove a show (for example on request): delete its row in **Table Editor → shows**. Its marshal code and marshal list are removed with it.
 
+## Step 13 — Approved organisers
+
+Only organisers you approve can publish live shows.
+
+1. **SQL Editor → New query**, paste the whole of `supabase/organisers.sql`, click **Run** (confirm the warning).
+2. **Approve yourself** (after you've created your account on the site), replacing the email with yours:
+   ```sql
+   select public.rt_approve_organiser('you@example.com');
+   ```
+   You should see `Approved: you@example.com`.
+3. **When someone asks** (they tap **Request organiser access** on the Live tab), see the waiting list:
+   ```sql
+   select email, organisation, created_at from public.organiser_requests order by created_at;
+   ```
+   Check they're genuine (for example, a quick call or email), then approve them with the same `rt_approve_organiser` line.
+4. **To remove an organiser:**
+   ```sql
+   select public.rt_remove_organiser('person@example.com');
+   ```
+   Their already-published shows stay until they expire (7 days after the show) or you delete them in **Table Editor → shows**.
+
+Tip: the Supabase SQL Editor lets you **Save** a query. Save the waiting-list and approve queries as favourites so they're one click away.
+
 ## POPIA notes
 
+- Organiser requests store the person's account email and the organisation they typed, so you can check them; approved or withdrawn requests are deleted.
 - Live shows store the schedule, including riders' and horses' names, so all signed-in users can follow them. The publisher confirms they're allowed to share the running order, and each show is deleted automatically 7 days after its show date (job `ringside-delete-old-shows`). Only the publisher and their marshals can change a show; this is enforced by Row Level Security and database functions, not just the website.
 
 - Accounts store an email address and a hashed password in Supabase Auth (hosted in the EU). People agree to this on the sign-up form. Put a contact email in `config.js` (`CONTACT_EMAIL`) so users know who to ask to see, correct or delete their details.

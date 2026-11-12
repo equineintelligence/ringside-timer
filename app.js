@@ -830,7 +830,7 @@
       const r = await dialog("Sign out?", "<p>Your show stays saved on this phone for when you sign in again.</p>", [{ label: "Cancel", value: "no" }, { label: "Sign out", value: "yes", cls: "danger" }]);
       if (r.value !== "yes") return;
       const t = session && session.access_token;
-      clearInterval(cloudUI.pollTimer); pending = { classes: {}, status: {} }; cloudUI.list = null;
+      clearInterval(cloudUI.pollTimer); pending = { classes: {}, status: {} }; cloudUI.list = null; cloudUI.isOrganiser = null; cloudUI.request = null;
       clearSession(); show = null; stars = { riders: [], horses: [] };
       if (t) authFetch("logout", null, "POST", t).catch(() => {});
       authMode("signin"); setView("auth");
@@ -937,6 +937,7 @@
         not_owner: "Only the person who published this show can do that.",
         too_many_attempts: "Too many wrong codes. Please wait an hour and try again.",
         too_many_shows: "You've published a lot of shows today. Please try again tomorrow.",
+        not_organiser: "Only approved show organisers can publish live shows. Use “Request organiser access” on the Live tab.",
         login_required: "Please sign in again."
       };
       throw Object.assign(new Error(msgs[m] || (m ? m : "Server error (" + res.status + ")")), { code: m || res.status, status: res.status });
@@ -1123,7 +1124,26 @@
     try { await api("shows?id=eq." + show.cloud.id, { method: "DELETE", headers: { Prefer: "return=minimal" } }); banner("Live show removed.", "ok", [], 5000); leaveCloud(); }
     catch (e) { banner(esc(e.message), "err", [], 6000); }
   }
+  async function loadOrganiserStatus() {
+    try {
+      const o = await api("organisers?select=user_id");
+      cloudUI.isOrganiser = !!(o && o.length);
+      const r = cloudUI.isOrganiser ? [] : await api("organiser_requests?select=organisation,created_at");
+      cloudUI.request = r && r.length ? r[0] : null;
+    } catch (e) { /* leave as unknown */ }
+  }
+  async function requestOrganiser() {
+    const r = await dialog("Request organiser access", "<p>Tell us which show, club or venue you organise. The site owner checks requests before approving them.</p>" +
+      '<label>Show / club / venue<input name="org" maxlength="120" autocomplete="organization"></label>',
+      [{ label: "Cancel", value: "no" }, { label: "Send request", value: "yes", cls: "primary" }]);
+    if (r.value !== "yes") return;
+    const org = (r.vals.org || "").trim();
+    if (org.length < 2) { banner("Please enter the show, club or venue name.", "err", [], 6000); return; }
+    try { await api("organiser_requests", { method: "POST", headers: { Prefer: "return=minimal" }, body: { organisation: org } }); await loadOrganiserStatus(); renderLive(); banner("Request sent. You'll be able to publish once it's approved.", "ok", [], 7000); }
+    catch (e) { banner("Couldn't send the request: " + esc(e.message), "err", [], 7000); }
+  }
   async function loadShowList() {
+    loadOrganiserStatus().then(() => { if (ui.view === "live") renderLive(); });
     try {
       const since = new Date(Date.now() - 8 * 864e5).toISOString().slice(0, 10);
       cloudUI.list = await api("shows?select=id,owner,name,show_date,live_updated_at,created_at&published=is.true&or=(show_date.gte." + since + ",show_date.is.null)&order=show_date.desc.nullslast,created_at.desc&limit=60");
@@ -1172,9 +1192,19 @@
           '<p class="muted small">Edits you make in the Edit tab are sent to everyone automatically.</p></div>';
       }
       h += "</div>";
-    } else if (show) {
+    } else if (cloudUI.isOrganiser && show) {
       h += '<div class="card"><h3>Share your show live</h3><p class="muted">Publish <strong>' + esc(show.name) + "</strong> so riders, grooms and parents can follow it, and your marshals can update it from the ring.</p>" +
         '<button class="btn primary" type="button" data-lv="publish">Publish as a live show</button></div>';
+    } else if (cloudUI.isOrganiser) {
+      h += '<div class="card"><h3>You\'re an approved organiser</h3><p class="muted">Load your show (Load a show → CSV, PDF or Excel), check it, then come back here to publish it live.</p></div>';
+    } else if (cloudUI.isOrganiser === false) {
+      if (cloudUI.request) {
+        h += '<div class="card"><h3>Organiser request sent</h3><p class="muted">You asked to publish shows for <strong>' + esc(cloudUI.request.organisation) + "</strong> on " + esc(String(cloudUI.request.created_at).slice(0, 10)) + ". You'll be able to publish once it's approved.</p>" +
+          '<button class="btn small" type="button" data-lv="withdraw">Withdraw request</button></div>';
+      } else {
+        h += '<div class="card"><h3>Are you a show organiser?</h3><p class="muted">Publishing live shows is limited to approved organisers, so everyone can trust what they see. Riders, grooms and parents don\'t need this — just tap a show below.</p>' +
+          '<button class="btn" type="button" data-lv="request">Request organiser access</button></div>';
+      }
     }
     h += '<div class="view-head"><h3>Live shows</h3><button class="btn small" type="button" data-lv="refresh">Refresh</button></div>';
     if (cloudUI.listError) h += '<p class="muted">' + esc(cloudUI.listError) + "</p>";
@@ -1256,6 +1286,8 @@
       const b = ev.target.closest("[data-lv]"); if (!b) return;
       switch (b.dataset.lv) {
         case "publish": publishShow(); break;
+        case "request": requestOrganiser(); break;
+        case "withdraw": try { await api("organiser_requests?user_id=eq." + session.user.id, { method: "DELETE", headers: { Prefer: "return=minimal" } }); cloudUI.request = null; renderLive(); } catch (e) { banner(esc(e.message), "err", [], 6000); } break;
         case "refresh": cloudUI.list = null; renderLive(); loadShowList(); if (isCloud()) pollCloud(true); break;
         case "marshal": setView("marshal"); break;
         case "arenas": setView("arenas"); break;
