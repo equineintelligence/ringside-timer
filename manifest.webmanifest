@@ -1,0 +1,11 @@
+{
+  "name": "Ringside Timer",
+  "short_name": "Ringside",
+  "description": "Estimate what time each horse and rider will jump at a showjumping show.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f6f4ee",
+  "theme_color": "#1d4a2f",
+  "icons": [{ "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }]
+}

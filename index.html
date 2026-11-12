@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en-ZA">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Ringside Timer</title>
+  <meta name="description" content="Estimate what time each horse and rider will jump at a South African showjumping show.">
+  <meta name="theme-color" content="#1d4a2f">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icon.svg">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <svg class="logo" viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="14" fill="none" stroke="currentColor" stroke-width="2.5"/><path d="M16 8v8l5 3" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/></svg>
+      <div>
+        <h1>Ringside Timer</h1>
+        <p class="showname" id="showName">No show loaded</p>
+      </div>
+    </div>
+    <div class="clock" id="clock" aria-label="Current South African time">--:--</div>
+  </header>
+  <p class="disclaimer">Estimates only. The ring steward and show office have the final say.</p>
+
+  <div id="banner" class="banner" hidden></div>
+
+  <main id="main">
+    <!-- LOAD -->
+    <section id="view-load" class="view" hidden>
+      <h2>Load a show</h2>
+      <div class="card">
+        <h3>1. Spreadsheet (CSV)</h3>
+        <p class="muted">Most reliable. Fill in the template, one row per horse.</p>
+        <div class="row-btns">
+          <label class="btn primary file-btn">Choose CSV or backup file<input type="file" id="fileCsv" accept=".csv,.json,text/csv,application/json"></label>
+          <button class="btn" id="btnTemplate" type="button">Download blank template</button>
+        </div>
+      </div>
+      <div class="card">
+        <h3>2. Show schedule (PDF or Excel)</h3>
+        <p class="muted">We'll read it on your phone and show you the result to check.</p>
+        <label class="btn primary file-btn">Choose PDF or Excel<input type="file" id="fileDoc" accept=".pdf,.xlsx,.xls,.ods,application/pdf"></label>
+        <div id="docChoice" class="doc-choice" hidden>
+          <p><strong id="docName"></strong></p>
+          <div class="row-btns">
+            <button class="btn primary" id="btnReadLocal" type="button">Read on this phone (free)</button>
+            <button class="btn ai" id="btnReadAI" type="button" hidden>Read schedule with AI</button>
+          </div>
+          <p class="muted small" id="aiPrivacy" hidden>AI reading sends this file to an AI service to be processed. It is not stored. Limited to a few reads per day.</p>
+        </div>
+      </div>
+      <div class="card">
+        <h3>3. Just trying it out?</h3>
+        <button class="btn" id="btnSample" type="button">Load the sample show</button>
+      </div>
+      <div class="card" id="resumeCard" hidden>
+        <h3>Saved show</h3>
+        <p class="muted" id="resumeText"></p>
+        <button class="btn primary" id="btnResume" type="button">Go to saved show</button>
+      </div>
+    </section>
+
+    <!-- REVIEW -->
+    <section id="view-review" class="view" hidden>
+      <div class="view-head">
+        <h2>Check &amp; edit</h2>
+        <button class="btn primary" id="btnReviewDone" type="button">Looks good →</button>
+      </div>
+      <p class="muted">Anything highlighted in <span class="flag-inline">amber</span> needs checking. Changes save automatically.</p>
+      <div class="card">
+        <div class="grid2">
+          <label>Show name<input id="inShowName" type="text" autocomplete="off"></label>
+          <label>Show date<input id="inShowDate" type="date"></label>
+        </div>
+      </div>
+      <div id="reviewList"></div>
+      <div class="row-btns center">
+        <button class="btn" id="btnAddClass" type="button">+ Add class</button>
+      </div>
+    </section>
+
+    <!-- ARENAS -->
+    <section id="view-arenas" class="view" hidden>
+      <div class="arena-tabs" id="arenaTabs" role="tablist"></div>
+      <div id="arenaSummary" class="summary"></div>
+      <div id="arenaClasses"></div>
+    </section>
+
+    <!-- MY RIDERS -->
+    <section id="view-mine" class="view" hidden>
+      <h2>My riders</h2>
+      <label class="search"><span class="sr">Search rider or horse</span>
+        <input id="inSearch" type="search" placeholder="Search rider or horse…" autocomplete="off">
+      </label>
+      <div id="searchResults"></div>
+      <div id="clashList"></div>
+      <div id="mineList"></div>
+    </section>
+
+    <!-- SETTINGS -->
+    <section id="view-settings" class="view" hidden>
+      <h2>Settings</h2>
+      <div class="card">
+        <h3>Time per round (seconds)</h3>
+        <p class="muted small">Includes entering, saluting and leaving the arena.</p>
+        <div class="grid3">
+          <label>Normal<input type="number" min="30" max="600" data-set="sprNormal"></label>
+          <label>Speed<input type="number" min="30" max="600" data-set="sprSpeed"></label>
+          <label>Two-phase<input type="number" min="30" max="600" data-set="sprTwoPhase"></label>
+        </div>
+      </div>
+      <div class="card">
+        <h3>Between classes (minutes)</h3>
+        <div class="grid2">
+          <label>Course walk<input type="number" min="0" max="60" data-set="walkMin"></label>
+          <label>Prize-giving<input type="number" min="0" max="60" data-set="prizeMin"></label>
+          <label>Course rebuilt<input type="number" min="0" max="90" data-set="changeRebuiltMin"></label>
+          <label>Same course, height raised<input type="number" min="0" max="60" data-set="changeSameMin"></label>
+        </div>
+        <p class="muted small">When a class is marked "same course, height raised", there is no separate course walk.</p>
+      </div>
+      <div class="card">
+        <h3>Jump-offs and second rounds</h3>
+        <div class="grid3">
+          <label>% to jump-off<input type="number" min="0" max="100" data-set="joPct"></label>
+          <label>Jump-off secs each<input type="number" min="20" max="300" data-set="joSec"></label>
+          <label>% in 2nd round<input type="number" min="0" max="100" data-set="r2Pct"></label>
+        </div>
+      </div>
+      <div class="card">
+        <h3>Other</h3>
+        <div class="grid2">
+          <label>Day start if no time given<input type="time" data-set="dayStart"></label>
+          <label>Clash warning (minutes)<input type="number" min="1" max="60" data-set="clashMin"></label>
+          <label>Use real average after (rounds)<input type="number" min="2" max="20" data-set="avgAfter"></label>
+          <label>Theme
+            <select data-set="theme"><option value="auto">Match phone</option><option value="light">Light</option><option value="dark">Dark</option></select>
+          </label>
+        </div>
+      </div>
+      <div class="card">
+        <h3>Lunch break per arena</h3>
+        <div id="lunchList"></div>
+      </div>
+      <div class="card">
+        <h3>Export / share</h3>
+        <div class="row-btns">
+          <button class="btn" id="btnExportCsv" type="button">Download CSV</button>
+          <button class="btn" id="btnExportJson" type="button">Download backup (JSON)</button>
+          <button class="btn" id="btnShare" type="button" hidden>Share…</button>
+        </div>
+      </div>
+      <div class="card">
+        <h3>Start again</h3>
+        <div class="row-btns">
+          <button class="btn" id="btnResetSettings" type="button">Reset settings</button>
+          <button class="btn" id="btnClearLive" type="button">Clear all live updates</button>
+          <button class="btn danger" id="btnNewShow" type="button">Load a different show</button>
+        </div>
+      </div>
+      <div class="card privacy">
+        <h3>Privacy</h3>
+        <p class="small">Your show is saved only on this phone. If you use "Read schedule with AI", the file is sent to an AI service (outside South Africa) to be processed and is not stored; we keep only an anonymous count of AI reads to prevent abuse. The free on-phone reader never sends your file anywhere.</p>
+      </div>
+    </section>
+  </main>
+
+  <nav class="tabbar" id="tabbar" aria-label="Main">
+    <button data-view="arenas" type="button"><span class="ico">◎</span>Arenas</button>
+    <button data-view="mine" type="button"><span class="ico">★</span>My riders</button>
+    <button data-view="review" type="button"><span class="ico">✎</span>Edit</button>
+    <button data-view="settings" type="button"><span class="ico">⚙</span>Settings</button>
+  </nav>
+
+  <dialog id="dlg">
+    <form method="dialog" id="dlgForm">
+      <h3 id="dlgTitle"></h3>
+      <div id="dlgBody"></div>
+      <div class="row-btns end" id="dlgBtns"></div>
+    </form>
+  </dialog>
+
+  <div id="busy" class="busy" hidden><div class="spinner"></div><p id="busyText">Working…</p></div>
+
+  <footer class="foot">
+    <p>Estimates only. The ring steward and show office have the final say.</p>
+    <p>Saved on this phone · works offline once loaded</p>
+  </footer>
+
+  <script src="config.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
