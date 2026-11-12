@@ -1,6 +1,6 @@
 # Setting up AI schedule reading (Supabase + Claude)
 
-This guide switches on the **"Read schedule with AI"** button. Everything else in Ringside Timer already works without it, so you can do this whenever you're ready.
+This guide sets up **sign-in accounts** and the **"Read schedule with AI"** button. Because people must sign in to use Ringside Timer, Supabase is required.
 
 You'll use only websites, no command line. Allow about 45 minutes. Website menus change from time to time; if what you see doesn't match, look for a similar name nearby (and ask Claude to help you find it).
 
@@ -12,9 +12,9 @@ Phone (GitHub Pages website)  ──►  Supabase Edge Function "parse-schedule"
    public anon/publishable key       checks limits, checks the answer
 ```
 
-- **The Supabase anon / publishable key is safe to be public.** It's designed to sit in website code. On its own it can only do what your security rules allow. Here that means "call the parse-schedule function"; the database table is locked with Row Level Security, so the key can't read or change it.
+- **The Supabase anon / publishable key is safe to be public.** It's designed to sit in website code. On its own it can only do what your security rules allow. Here that means: create an account, sign in, and call the parse-schedule function (which also checks the person is signed in). The database table is locked with Row Level Security, so the key can't read or change it.
 - **The Anthropic API key is NOT safe to be public.** Anyone who has it can use Claude on *your* account and run up *your* bill. So it is stored only as a secret inside Supabase, where the website (and visitors) can never see it. Never paste it into `config.js`, GitHub, an email or a chat.
-- Real protection against abuse comes from: the daily limits in the function (10 reads per person, 200 for everyone), the 5 MB / 100,000-character size limits, and the **monthly spend limit** you set at Anthropic in Step 1. (The "only accept requests from equineintelligence.github.io" check stops other websites using your function, but someone determined could still fake it, which is why the limits matter.)
+- Real protection against abuse comes from: the login check and daily limits in the function (10 reads per account, 200 for everyone), the 5 MB / 100,000-character size limits, and the **monthly spend limit** you set at Anthropic in Step 1. (The "only accept requests from equineintelligence.github.io" check stops other websites using your function, but someone determined could still fake it, which is why the limits matter.)
 
 ---
 
@@ -53,7 +53,7 @@ Phone (GitHub Pages website)  ──►  Supabase Edge Function "parse-schedule"
 ✅ You should see **"Success. No rows returned"** (or a small result table showing a job number). If it asks you to confirm a "destructive operation", that's just the `revoke` line; click to run it anyway.
 
 What this did:
-- Created the `parse_requests` table (hashed IP, time, success flag only).
+- Created the `parse_requests` table (scrambled account ID, time, success flag only).
 - Turned on **Row Level Security** with no policies, so the public can't touch it.
 - Scheduled an automatic job (pg_cron) that deletes rows older than 30 days, every night.
 
@@ -77,14 +77,14 @@ To check: left menu **Table Editor** → `parse_requests` should be listed with 
    - **Key / Name:** `ANTHROPIC_API_KEY`
    - **Value:** paste your `sk-ant-…` key from Step 1.
 3. Optional but recommended, add another:
-   - **Key:** `IP_HASH_SALT`  **Value:** any long random text (e.g. mash the keyboard for 30 characters). This makes the hashed IP addresses impossible to reverse.
+   - **Key:** `IP_HASH_SALT`  **Value:** any long random text (e.g. mash the keyboard for 30 characters). This makes the scrambled account IDs impossible to reverse.
 4. Click **Save**.
 
 ✅ You should see `ANTHROPIC_API_KEY` in the list, with its value hidden. Now delete the copy of the key from wherever you kept it temporarily.
 
 ## Step 6 — Allow public calls and find the function URL
 
-The website has no user logins, so the function must accept calls without a logged-in user (it does its own checks instead).
+Supabase's built-in "Verify JWT" check only works with the old-style keys, so it's switched off and the function checks the login itself (it rejects anyone who isn't signed in).
 
 1. Go to **Edge Functions** → click **parse-schedule** → **Details** (or **Settings**).
 2. Find the setting called **Verify JWT** / **Enforce JWT verification** and turn it **OFF**. Click **Save** if there is a button.
@@ -114,7 +114,9 @@ window.RINGSIDE_CONFIG = {
 
 ## Step 8 — Test the function
 
-**Quick test in Supabase (no website needed):**
+**Quick check in Supabase:** the function needs a signed-in user, so a request from the Test panel (which has no user login) should return `401` with `"code": "login_required"`. That shows the lock works. The real test is: sign in on the website and use **Read schedule with AI** on `sample-schedule.pdf`.
+
+**Older test (from before logins were added), for reference:**
 
 1. **Edge Functions → parse-schedule** → click **Test** (top right).
 2. Method **POST**. Add a header: name `Origin`, value `http://localhost:8000`.
@@ -134,6 +136,7 @@ window.RINGSIDE_CONFIG = {
 | code | Meaning | Fix |
 |---|---|---|
 | `not_configured` | No `ANTHROPIC_API_KEY` secret | Redo Step 5 (exact name) |
+| `login_required` (401) | Not signed in, or the sign-in expired | Sign in again on the website |
 | `forbidden_origin` (403) | The request didn't come from your site or localhost | Add the `Origin` header in the test |
 | `parse_failed` (422) | Claude's answer couldn't be used, or the Anthropic call failed | Check **Logs** for "Anthropic API error"; 401 = wrong key, 400 with "credit" = add credit, 404 = model name changed |
 | `rate_limit_user` / `rate_limit_global` (429) | Daily limit reached | Normal; see Step 10 |
@@ -171,8 +174,24 @@ Follow **"Putting it on GitHub Pages"** in `README.md` (repository `ringside-tim
 - **Check the 30-day clean-up ran:** SQL Editor → `select * from cron.job_run_details order by start_time desc limit 5;`
 - **Free plan note:** Supabase may pause free projects after a week with no activity. If AI reading stops working after a quiet spell, open the Supabase dashboard and click **Restore project**.
 
+## Step 11 — Set up sign-in (Supabase Auth)
+
+1. **Authentication → URL Configuration**:
+   - **Site URL:** `https://equineintelligence.github.io/ringside-timer/`
+   - **Redirect URLs:** add `https://equineintelligence.github.io/ringside-timer/**` (and `http://localhost:8000/**` if you test on your computer).
+   These make the "confirm your email" and "reset password" links come back to your site.
+2. **Authentication → Sign In / Providers → Email:** make sure Email is enabled and set the **minimum password length** to 8.
+3. **Emails (important):** Supabase's built-in email sender only delivers to members of your own Supabase team, and only about 2 emails an hour. For the public there are two options:
+   - **Quick start:** turn **off** "Confirm email". People can sign up and use the app straight away. (Password-reset emails still won't reach the public until you do the next option.)
+   - **Proper set-up (recommended before you promote the site):** connect a free email service under **Authentication → Emails → SMTP Settings** (for example Brevo or Resend), then turn "Confirm email" back on. You need an email address or domain you control to send from.
+4. Test: open the site, **Create account**, sign in, load the sample show, sign out and back in, and try **Forgot your password?**.
+
+To see who has signed up: **Authentication → Users**. You can delete a user there if they ask (POPIA).
+
 ## POPIA notes
+
+- Accounts store an email address and a hashed password in Supabase Auth (hosted in the EU). People agree to this on the sign-up form. Put a contact email in `config.js` (`CONTACT_EMAIL`) so users know who to ask to see, correct or delete their details.
 
 - Running orders contain riders' names (personal information). The function processes the file and returns the result; it does not store schedule contents or results anywhere.
 - The file is processed by Anthropic (in the USA), and Supabase runs in Europe, so this is a cross-border transfer. The privacy note on the site tells users this happens only if they choose AI reading; the free reader keeps everything on the phone.
-- `parse_requests` stores only a hashed IP (re-hashed with a new daily value, so it can't be linked across days), a timestamp and success/fail, and is deleted after 30 days.
+- `parse_requests` stores only a scrambled account ID (re-scrambled with a new daily value, so it can't be linked across days), a timestamp and success/fail, and is deleted after 30 days.

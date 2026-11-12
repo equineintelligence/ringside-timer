@@ -2,17 +2,25 @@
 -- Paste this whole file into Supabase → SQL Editor → New query, then click "Run".
 -- It is safe to run more than once.
 
--- 1) The rate-limit table. It holds ONLY a hashed IP, a timestamp and a success flag.
---    No schedule contents, names or results are ever stored.
+-- 1) The rate-limit table. It holds ONLY a hashed account ID (re-scrambled every day),
+--    a timestamp and a success flag. No schedule contents, names or results are stored.
 create table if not exists public.parse_requests (
-  id          bigint generated always as identity primary key,
-  ip_hash     text        not null,
-  created_at  timestamptz not null default now(),
-  success     boolean     not null default false
+  id              bigint generated always as identity primary key,
+  requester_hash  text        not null,
+  created_at      timestamptz not null default now(),
+  success         boolean     not null default false
 );
 
+-- (Upgrade from the first version, which used a column called ip_hash.)
+do $$ begin
+  if exists (select 1 from information_schema.columns
+             where table_schema = 'public' and table_name = 'parse_requests' and column_name = 'ip_hash') then
+    alter table public.parse_requests rename column ip_hash to requester_hash;
+  end if;
+end $$;
+
 create index if not exists parse_requests_created_at_idx on public.parse_requests (created_at);
-create index if not exists parse_requests_ip_day_idx     on public.parse_requests (ip_hash, created_at);
+create index if not exists parse_requests_ip_day_idx     on public.parse_requests (requester_hash, created_at);
 
 -- 2) Lock the table. Row Level Security is ON and there are NO policies, so the
 --    public (anon) and logged-in users can't read, add, change or delete rows.

@@ -3,13 +3,16 @@
 // Receives a show schedule (PDF as base64, or Excel text) from the website,
 // asks Claude to turn it into structured JSON, checks the JSON, and returns it.
 //
+// Only signed-in users of the website can use it (their login token is checked).
+//
 // PRIVACY (POPIA): schedule contents are NEVER stored. The only thing saved is
-// one row in "parse_requests": a hashed IP, a timestamp and a success flag.
+// one row in "parse_requests": a hashed (scrambled) account ID that changes
+// every day, a timestamp and a success flag.
 //
 // Secrets this function uses (set in Supabase → Edge Functions → Secrets):
 //   ANTHROPIC_API_KEY  (required)  your Claude API key — never put it anywhere else
-//   IP_HASH_SALT       (optional)  any long random text; makes hashed IPs harder to guess
-//   USER_DAILY_LIMIT   (optional)  AI reads per person per day   (default 10)
+//   IP_HASH_SALT       (optional)  any long random text; makes the hashed IDs impossible to reverse
+//   USER_DAILY_LIMIT   (optional)  AI reads per account per day  (default 10)
 //   GLOBAL_DAILY_LIMIT (optional)  AI reads for everyone per day (default 200)
 //   CLAUDE_MODEL       (optional)  overrides the model below without editing code
 // SUPABASE_URL and the server key (SUPABASE_SECRET_KEYS or legacy SUPABASE_SERVICE_ROLE_KEY) are provided automatically.
@@ -237,15 +240,24 @@ Deno.serve(async (req: Request) => {
     return reply(origin, 400, { ok: false, code: "bad_request", error: 'Unknown request type (expected "pdf" or "text").' });
   }
 
-  // ---- Rate limits (hashed IP only, never the raw IP) ----
   const db = createClient(Deno.env.get("SUPABASE_URL")!, serverKey(), { auth: { persistSession: false } });
-  const ip = (req.headers.get("x-forwarded-for") ?? "").split(",")[0].trim() || req.headers.get("cf-connecting-ip") || "unknown";
+
+  // ---- Must be signed in: check the user's login token with Supabase Auth ----
+  const token = (req.headers.get("authorization") ?? "").replace(/^Bearer\s+/i, "").trim();
+  if (!token || token.startsWith("sb_")) {
+    return reply(origin, 401, { ok: false, code: "login_required", error: "Please sign in to use AI reading." });
+  }
+  const { data: userData, error: userError } = await db.auth.getUser(token);
+  if (userError || !userData?.user) {
+    return reply(origin, 401, { ok: false, code: "login_required", error: "Your sign-in has expired. Please sign in again." });
+  }
+
+  // ---- Rate limits (per account; only a hashed, daily-changing ID is stored) ----
   const dayStart = startOfSaDayIso();
-  // The day is part of the hash, so the same person gets a different hash each day.
-  const ipHash = await sha256Hex(`${Deno.env.get("IP_HASH_SALT") ?? "ringside-timer"}|${dayStart.slice(0, 10)}|${ip}`);
+  const requesterHash = await sha256Hex(`${Deno.env.get("IP_HASH_SALT") ?? "ringside-timer"}|${dayStart.slice(0, 10)}|${userData.user.id}`);
 
   const [userCount, globalCount] = await Promise.all([
-    db.from("parse_requests").select("id", { count: "exact", head: true }).eq("ip_hash", ipHash).gte("created_at", dayStart),
+    db.from("parse_requests").select("id", { count: "exact", head: true }).eq("requester_hash", requesterHash).gte("created_at", dayStart),
     db.from("parse_requests").select("id", { count: "exact", head: true }).gte("created_at", dayStart),
   ]);
   if (userCount.error || globalCount.error) {
@@ -260,7 +272,7 @@ Deno.serve(async (req: Request) => {
   }
 
   // Record the attempt first (counts towards the limit even if it fails), then mark success.
-  const ins = await db.from("parse_requests").insert({ ip_hash: ipHash, success: false }).select("id").single();
+  const ins = await db.from("parse_requests").insert({ requester_hash: requesterHash, success: false }).select("id").single();
   const rowId = ins.data?.id;
 
   // ---- Ask Claude, check the answer, retry once ----

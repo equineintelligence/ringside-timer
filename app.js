@@ -122,15 +122,15 @@
     dayStart: "08:00", clashMin: 10, avgAfter: 3, theme: "auto"
   };
   let S = Object.assign({}, DEFAULTS, load("rt.settings") || {});
-  let show = load("rt.show");
-  let stars = Object.assign({ riders: [], horses: [] }, load("rt.stars") || {});
+  let show = null;  // loaded per account after sign-in
+  let stars = { riders: [], horses: [] };
   const ui = { view: null, arena: null, open: {}, undo: null, docFile: null, search: "" };
   const CFG = window.RINGSIDE_CONFIG || {};
   const aiConfigured = !!(CFG.SUPABASE_URL && CFG.SUPABASE_ANON_KEY && !/YOUR-/.test(CFG.SUPABASE_URL + CFG.SUPABASE_ANON_KEY));
 
-  function saveShow() { if (show) store("rt.show", show); }
+  function saveShow() { if (show) store(ukey("show"), show); }
   function saveSettings() { store("rt.settings", S); }
-  function saveStars() { store("rt.stars", stars); }
+  function saveStars() { store(ukey("stars"), stars); }
 
   function blankLive() { return { startedAt: null, finishedAt: null, nowId: null, nowAt: null, marks: [] }; }
   function makeClass(o) {
@@ -444,8 +444,9 @@
       if (text.length > 100000) throw Object.assign(new Error("That spreadsheet has too much text for AI reading (over 100,000 characters)."), { code: "too_large" });
       body = { kind: "text", filename: file.name, text };
     }
-    const headers = { "Content-Type": "application/json", apikey: CFG.SUPABASE_ANON_KEY };
-    if (/^eyJ/.test(CFG.SUPABASE_ANON_KEY)) headers.Authorization = "Bearer " + CFG.SUPABASE_ANON_KEY;
+    const token = await freshToken();
+    if (!token) throw Object.assign(new Error("Please sign in again to use AI reading."), { code: "login_required" });
+    const headers = { "Content-Type": "application/json", apikey: CFG.SUPABASE_ANON_KEY, Authorization: "Bearer " + token };
     let resp, data;
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), 150000);
@@ -656,6 +657,240 @@
   }
 
   // ===================================================================
+  // Accounts (Supabase Auth, called directly — no extra library needed)
+  // The session is kept on this phone so the app keeps working offline.
+  // ===================================================================
+  const AUTH_KEY = "rt.auth";
+  let session = load(AUTH_KEY);
+  const SITE_URL = location.origin + location.pathname.replace(/index\.html$/, "");
+
+  function authUrl(path) { return CFG.SUPABASE_URL.replace(/\/$/, "") + "/auth/v1/" + path; }
+  async function authFetch(path, body, method, token) {
+    const headers = { "Content-Type": "application/json", apikey: CFG.SUPABASE_ANON_KEY };
+    if (token) headers.Authorization = "Bearer " + token;
+    let res;
+    try { res = await fetch(authUrl(path), { method: method || "POST", headers, body: body ? JSON.stringify(body) : undefined }); }
+    catch (e) { throw Object.assign(new Error("No connection. Please check your signal and try again."), { code: "network" }); }
+    let data = null; try { data = await res.json(); } catch (e) { /* empty body */ }
+    if (!res.ok) {
+      const raw = (data && (data.msg || data.error_description || data.message || data.error)) || "";
+      const code = (data && (data.error_code || data.code)) || res.status;
+      throw Object.assign(new Error(friendlyAuthError(raw, code, res.status)), { code, status: res.status });
+    }
+    return data || {};
+  }
+  function friendlyAuthError(raw, code, status) {
+    const r = String(raw).toLowerCase(), c = String(code);
+    if (/invalid login|invalid_credentials/.test(r + c)) return "That email and password don't match. Please try again.";
+    if (/not confirmed|email_not_confirmed/.test(r + c)) return "Please confirm your email first — check your inbox (and spam) for the link we sent.";
+    if (/already registered|user_already_exists|already been registered/.test(r + c)) return "There's already an account with that email. Try signing in, or reset your password.";
+    if (/weak|password should|weak_password/.test(r + c)) return "Please choose a stronger password (at least 8 characters, ideally with letters and numbers).";
+    if (status === 429 || /rate limit|over_email_send_rate_limit/.test(r + c)) return "Too many attempts. Please wait a few minutes and try again.";
+    if (/signups not allowed|signup_disabled/.test(r + c)) return "New sign-ups are switched off at the moment.";
+    if (/invalid email|email_address_invalid/.test(r + c)) return "Please check the email address.";
+    if (/not authorized|email address not authorized/.test(r)) return "We couldn't send an email to that address yet. Please contact the site owner.";
+    return raw ? String(raw) : "Something went wrong (" + status + "). Please try again.";
+  }
+  function setSession(d) {
+    if (!d || !d.access_token) return false;
+    session = {
+      access_token: d.access_token, refresh_token: d.refresh_token,
+      expires_at: d.expires_at || Math.floor(Date.now() / 1000) + (+d.expires_in || 3600),
+      user: { id: d.user ? d.user.id : (session && session.user && session.user.id), email: d.user ? d.user.email : (session && session.user && session.user.email) }
+    };
+    store(AUTH_KEY, session);
+    return true;
+  }
+  function clearSession() { session = null; try { localStorage.removeItem(AUTH_KEY); } catch (e) { /* ignore */ } }
+  // Returns a usable access token, refreshing it if it's about to expire. Offline: keeps the old one.
+  async function freshToken() {
+    if (!session) return null;
+    if (session.expires_at - 60 > Date.now() / 1000) return session.access_token;
+    try { setSession(await authFetch("token?grant_type=refresh_token", { refresh_token: session.refresh_token })); }
+    catch (e) {
+      if (e.code === "network") return session.access_token; // offline: let the app keep working
+      clearSession(); return null;                          // refresh token no longer valid
+    }
+    return session ? session.access_token : null;
+  }
+  // Read tokens Supabase puts in the address after an email link (confirm sign-up / reset password)
+  function readAuthRedirect() {
+    const h = location.hash.replace(/^#/, "");
+    if (!/access_token=|error_description=|error=/.test(h)) return null;
+    const p = new URLSearchParams(h);
+    history.replaceState(null, "", location.pathname + location.search);
+    if (p.get("error_description") || p.get("error")) return { error: (p.get("error_description") || p.get("error")).replace(/\+/g, " ") };
+    const ok = setSession({ access_token: p.get("access_token"), refresh_token: p.get("refresh_token"), expires_in: p.get("expires_in"), expires_at: +p.get("expires_at") || undefined });
+    return ok ? { type: p.get("type") || "" } : null;
+  }
+  async function loadUser() {
+    try {
+      const u = await authFetch("user", null, "GET", session.access_token);
+      session.user = { id: u.id, email: u.email }; store(AUTH_KEY, session);
+    } catch (e) { if (e.status === 401 || e.status === 403) clearSession(); }
+  }
+
+  // Per-account storage on this phone, so two people sharing a phone don't see each other's show.
+  function ukey(k) { return "rt." + k + "." + (session && session.user && session.user.id ? session.user.id : "anon"); }
+  function loadUserData() {
+    let sh = load(ukey("show"));
+    let st = load(ukey("stars"));
+    // first sign-in on a phone that used the app before accounts existed: adopt the old show
+    if (!sh && load("rt.show")) { sh = load("rt.show"); st = st || load("rt.stars"); try { localStorage.removeItem("rt.show"); localStorage.removeItem("rt.stars"); } catch (e) { /* ignore */ } }
+    try { show = sh ? normalizeShow(sh) : null; } catch (e) { show = null; }
+    stars = Object.assign({ riders: [], horses: [] }, st || {});
+    if (show) saveShow(); saveStars();
+    ui.open = {}; ui.arena = null;
+  }
+
+  function authMode(mode) {
+    ui.authMode = mode;
+    $("#formSignIn").hidden = mode !== "signin";
+    $("#formSignUp").hidden = mode !== "signup";
+    $("#formForgot").hidden = mode !== "forgot";
+    $("#formNewPw").hidden = mode !== "newpw";
+    $("#authTabs").hidden = mode === "newpw";
+    $$("#authTabs button").forEach((b) => b.setAttribute("aria-selected", String(b.dataset.auth === mode)));
+    authMsg("");
+  }
+  function authMsg(text, kind) {
+    const m = $("#authMsg");
+    m.hidden = !text; m.textContent = text || ""; m.className = "auth-msg" + (kind ? " " + kind : "");
+  }
+  function afterSignIn(msg) {
+    ui.authMode = null;
+    loadUserData();
+    setView(show ? "arenas" : "load");
+    if (msg) banner(esc(msg), "ok", [], 6000);
+  }
+  function bindAuth() {
+    $("#view-auth").addEventListener("click", (ev) => {
+      const b = ev.target.closest("[data-auth]"); if (!b) return;
+      if (b.dataset.auth === "cancel") { authMode("signin"); setView(show ? "arenas" : "load"); return; }
+      authMode(b.dataset.auth);
+    });
+    $$(".showpw").forEach((cb) => cb.addEventListener("change", () => { $$('input[type="password"],input[data-pw]', cb.closest("form")).forEach((i) => { i.type = cb.checked ? "text" : "password"; i.dataset.pw = "1"; }); }));
+    const val = (form, n) => (form.elements[n] ? form.elements[n].value : "").trim();
+    const validEmail = (e) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e);
+    const lock = (form, on) => $$("button,input", form).forEach((x) => (x.disabled = on));
+
+    $("#formSignIn").addEventListener("submit", async (ev) => {
+      ev.preventDefault(); const f = ev.target; const email = val(f, "email"), pw = f.elements.password.value;
+      if (!validEmail(email) || !pw) return authMsg("Please enter your email and password.", "err");
+      lock(f, true); authMsg("Signing in…");
+      try { setSession(await authFetch("token?grant_type=password", { email, password: pw })); f.reset(); afterSignIn("Signed in as " + email); }
+      catch (e) { authMsg(e.message, "err"); }
+      finally { lock(f, false); }
+    });
+    $("#formSignUp").addEventListener("submit", async (ev) => {
+      ev.preventDefault(); const f = ev.target; const email = val(f, "email"), pw = f.elements.password.value, pw2 = f.elements.password2.value;
+      if (!validEmail(email)) return authMsg("Please enter a valid email address.", "err");
+      if (pw.length < 8) return authMsg("Your password needs at least 8 characters.", "err");
+      if (pw !== pw2) return authMsg("The two passwords don't match.", "err");
+      if (!f.elements.consent.checked) return authMsg("Please tick the box to agree to the privacy note.", "err");
+      lock(f, true); authMsg("Creating your account…");
+      try {
+        const d = await authFetch("signup?redirect_to=" + encodeURIComponent(SITE_URL), { email, password: pw });
+        f.reset();
+        if (setSession(d)) afterSignIn("Welcome! Your account is ready.");
+        else { authMode("signin"); authMsg("Almost done! We've emailed a confirmation link to " + email + ". Open it on this phone, then sign in. (Check spam if it doesn't arrive.)", "ok"); }
+      } catch (e) { authMsg(e.message, "err"); }
+      finally { lock(f, false); }
+    });
+    $("#formForgot").addEventListener("submit", async (ev) => {
+      ev.preventDefault(); const f = ev.target; const email = val(f, "email");
+      if (!validEmail(email)) return authMsg("Please enter a valid email address.", "err");
+      lock(f, true);
+      try { await authFetch("recover?redirect_to=" + encodeURIComponent(SITE_URL), { email }); authMode("signin"); authMsg("If there's an account for " + email + ", a reset link is on its way. Open it on this phone.", "ok"); }
+      catch (e) { authMsg(e.message, "err"); }
+      finally { lock(f, false); }
+    });
+    $("#formNewPw").addEventListener("submit", async (ev) => {
+      ev.preventDefault(); const f = ev.target; const pw = f.elements.password.value, pw2 = f.elements.password2.value;
+      if (pw.length < 8) return authMsg("Your password needs at least 8 characters.", "err");
+      if (pw !== pw2) return authMsg("The two passwords don't match.", "err");
+      lock(f, true);
+      try { const t = await freshToken(); await authFetch("user", { password: pw }, "PUT", t); f.reset(); afterSignIn("Your new password is saved."); }
+      catch (e) { authMsg(e.message, "err"); }
+      finally { lock(f, false); }
+    });
+    $("#btnSignOut").onclick = async () => {
+      const r = await dialog("Sign out?", "<p>Your show stays saved on this phone for when you sign in again.</p>", [{ label: "Cancel", value: "no" }, { label: "Sign out", value: "yes", cls: "danger" }]);
+      if (r.value !== "yes") return;
+      const t = session && session.access_token;
+      clearSession(); show = null; stars = { riders: [], horses: [] };
+      if (t) authFetch("logout", null, "POST", t).catch(() => {});
+      authMode("signin"); setView("auth");
+    };
+    $("#btnChangePw").onclick = () => { authMode("newpw"); setView("auth"); };
+    if (CFG.CONTACT_EMAIL) { const a = $("#contactLink"); a.textContent = CFG.CONTACT_EMAIL; a.href = "mailto:" + CFG.CONTACT_EMAIL; $("#contactLine").hidden = false; }
+  }
+
+  // ===================================================================
+  // Show plan for starred riders (print / PDF and WhatsApp)
+  // ===================================================================
+  function planRows() {
+    const R = compute(true); const clashes = findClashes(R);
+    const rows = [];
+    show.classes.forEach((c) => c.entries.forEach((e) => {
+      if (stars.riders.includes(norm(e.rider)) || stars.horses.includes(norm(e.horse))) {
+        const r = R.ent[e.id] || {};
+        rows.push({ c, e, t: r.t, state: r.state, clash: clashes.ids.has(e.id) });
+      }
+    }));
+    rows.sort((a, b) => (a.t == null) - (b.t == null) || a.t - b.t);
+    return { rows, clashes };
+  }
+  function planIntro() {
+    const now = saNow();
+    return { title: show.name || "Show", date: show.date || "", asAt: fmt(now.sec) + (show.date && show.date !== now.date ? " on " + now.date : "") };
+  }
+  function printPlan() {
+    const { rows } = planRows();
+    if (!rows.length) { banner("Star some riders or horses first (search above, or tap an entry in Arenas).", "", [], 6000); return; }
+    const p = planIntro();
+    const riders = [...new Set(rows.map((x) => x.e.rider).filter(Boolean))];
+    let h = '<div class="pp-head"><img src="icon-192.png" alt=""><div><h1>Show plan — ' + esc(p.title) + "</h1>" +
+      '<p class="pp-sub">' + esc(p.date) + " · " + rows.length + " round" + (rows.length > 1 ? "s" : "") + " · estimated times as at " + esc(p.asAt) + "</p></div></div>";
+    h += "<h2>Riders</h2><ul class=\"pp-riders\">" + riders.map((r) => "<li>" + esc(r) + "</li>").join("") + "</ul>";
+    h += "<table><thead><tr><th>Est. time</th><th>Rider</th><th>Horse</th><th>Arena</th><th>Class</th><th>Height</th><th>Format</th><th>Draw</th></tr></thead><tbody>";
+    rows.forEach((x) => {
+      const scr = x.state === "scratched";
+      h += '<tr class="' + (scr ? "scr" : x.clash ? "clash" : "") + '"><td class="time">' + (scr ? "–" : fmt(x.t)) + (x.clash && !scr ? " ⚠" : "") + "</td><td>" + esc(x.e.rider) + "</td><td>" + esc(x.e.horse) + "</td><td>" + esc(x.c.arena) + "</td><td>" + esc(x.c.no) + (x.c.name ? " " + esc(x.c.name) : "") + "</td><td>" + esc(x.c.height) + "</td><td>" + esc(SHORT[x.c.format]) + "</td><td>#" + esc(x.e.draw) + (scr ? " (scratched)" : "") + "</td></tr>";
+    });
+    h += "</tbody></table>";
+    h += '<p class="pp-note">⚠ = less than ' + S.clashMin + " minutes from the same rider's other round. Times are estimates based on the schedule and live updates in Ringside Timer; the ring steward and show office have the final say. Printed " + esc(p.asAt) + ".</p>";
+    $("#printPlan").innerHTML = h;
+    const img = $("#printPlan img");
+    const go = () => { try { window.print(); } catch (e) { banner("Printing isn't available here. Try “Send plan on WhatsApp” instead.", "err", [], 6000); } };
+    if (img && !img.complete) { img.onload = go; img.onerror = go; } else go();
+  }
+  function planText() {
+    const { rows } = planRows();
+    if (!rows.length) return "";
+    const p = planIntro();
+    const lines = ["*Ringside Timer – Show plan*", p.title + (p.date ? " · " + p.date : ""), "Estimated times as at " + p.asAt + " (the ring steward has the final say)", ""];
+    rows.forEach((x) => {
+      const scr = x.state === "scratched";
+      lines.push((scr ? "~" : "*") + (scr ? "SCRATCHED" : fmt(x.t)) + (scr ? "~" : "*") + " · " + x.c.arena + " · Class " + x.c.no + (x.c.height ? " (" + x.c.height + ")" : ""));
+      lines.push("#" + x.e.draw + " " + x.e.rider + " – " + x.e.horse + (x.clash && !scr ? "  ⚠ close to another round" : ""));
+      lines.push("");
+    });
+    return lines.join("\n").trim();
+  }
+  function sendPlanWhatsApp() {
+    const t = planText();
+    if (!t) { banner("Star some riders or horses first (search above, or tap an entry in Arenas).", "", [], 6000); return; }
+    window.open("https://wa.me/?text=" + encodeURIComponent(t), "_blank", "noopener");
+  }
+  async function copyPlan() {
+    const t = planText();
+    if (!t) { banner("Star some riders or horses first.", "", [], 5000); return; }
+    try { await navigator.clipboard.writeText(t); banner("Show plan copied — paste it into any message.", "ok", [], 4000); }
+    catch (e) { await dialog("Copy this plan", '<textarea readonly style="width:100%;min-height:240px;font:inherit">' + esc(t) + "</textarea>", [{ label: "Close", value: "x" }]); }
+  }
+
+  // ===================================================================
   // Banner, busy, dialogs
   // ===================================================================
   let bannerTimer = null;
@@ -719,16 +954,21 @@
   // Views
   // ===================================================================
   function setView(v) {
-    if (!show && v !== "load") v = "load";
+    if (!session) v = "auth";
+    else if (v === "auth") v = ui.authMode === "newpw" ? "auth" : show ? "arenas" : "load";
+    if (session && !show && v !== "load" && v !== "auth") v = "load";
     ui.view = v;
+    if (v === "auth" && !ui.authMode) authMode("signin");
     $$(".view").forEach((s) => (s.hidden = s.id !== "view-" + v));
     $$("#tabbar button").forEach((b) => b.setAttribute("aria-current", b.dataset.view === v ? "page" : "false"));
-    $("#tabbar").hidden = !show;
+    $("#tabbar").hidden = !show || v === "auth";
+    $(".foot").hidden = v === "auth";
     render();
     window.scrollTo(0, 0);
   }
   function render() {
     tickClock();
+    if (ui.view === "auth") { $("#showName").textContent = "Sign in to continue"; return; }
     $("#showName").textContent = show ? show.name + (show.date ? " · " + show.date : "") : "No show loaded";
     if (!show) { renderLoad(); return; }
     if (ui.view === "arenas") renderArenas();
@@ -752,7 +992,7 @@
 
   // ---------- Load ----------
   function renderLoad() {
-    const saved = load("rt.show");
+    const saved = load(ukey("show"));
     if (saved) $("#resumeText").textContent = saved.name + " · " + (saved.classes || []).length + " classes";
     $("#resumeCard").hidden = !saved;
     $("#btnReadAI").hidden = !aiConfigured;
@@ -911,6 +1151,7 @@
       '<div class="grid2" style="margin-bottom:10px"><label>' + esc(a.name) + ' — lunch at<input type="time" data-lunch="' + i + '" data-k="lunchStart" value="' + esc(a.lunchStart || "") + '"></label><label>Minutes<input type="number" min="0" max="120" data-lunch="' + i + '" data-k="lunchMin" value="' + esc(a.lunchMin || 0) + '"></label></div>').join("") +
       '<p class="muted small">Leave blank for no lunch break. The break is taken after the class that is running when lunch time arrives.</p>';
     $("#btnShare").hidden = !(navigator.canShare && window.File);
+    $("#acctEmail").textContent = (session && session.user && session.user.email) || "";
   }
 
   // ===================================================================
@@ -957,6 +1198,7 @@
       const msg = limited
         ? (e.code === "rate_limit_global" ? "The AI reader has reached its daily limit for everyone. " : "You've used today's AI reads. ") + "Please use the free reader on this phone, or the CSV template — they work just as well for most schedules."
         : esc(e.message) + " You can still use the free reader on this phone or the CSV template.";
+      if (e.code === "login_required") { banner("Your sign-in has expired. Please sign in again, then retry.", "err", [{ label: "Sign in", fn: () => { hideBanner(); clearSession(); setView("auth"); }, primary: true }]); return; }
       banner(msg, limited ? "" : "err", [{ label: "Read on this phone", fn: () => { hideBanner(); readLocal(); }, primary: true }, { label: "CSV template", fn: downloadTemplate }]);
     } finally { busy(false); }
   }
@@ -985,8 +1227,11 @@
   function bind() {
     $("#tabbar").addEventListener("click", (ev) => { const b = ev.target.closest("button[data-view]"); if (b) setView(b.dataset.view); });
     $("#btnTemplate").onclick = downloadTemplate;
+    $("#btnPlanPrint").onclick = printPlan;
+    $("#btnPlanWA").onclick = sendPlanWhatsApp;
+    $("#btnPlanCopy").onclick = copyPlan;
     $("#btnSample").onclick = loadSample;
-    $("#btnResume").onclick = () => { show = normalizeShow(load("rt.show")); setView("arenas"); };
+    $("#btnResume").onclick = () => { show = normalizeShow(load(ukey("show"))); setView("arenas"); };
     $("#fileCsv").onchange = async (ev) => {
       const f = ev.target.files[0]; ev.target.value = ""; if (!f) return;
       try { await handleCsvFile(f); } catch (e) { banner(esc(e.message), "err", [{ label: "Download CSV template", fn: downloadTemplate }]); }
@@ -1128,21 +1373,30 @@
   // ===================================================================
   function init() {
     applyTheme();
-    if (show) { try { show = normalizeShow(show); } catch (e) { show = null; } }
     bind();
+    bindAuth();
     tickClock();
-    setView(show ? "arenas" : "load");
+    const redirect = readAuthRedirect();
+    if (session) loadUserData();
+    if (redirect && redirect.error) { setView("auth"); authMode("signin"); authMsg("That link didn't work: " + redirect.error + ". Links expire after a while — please try again.", "err"); }
+    else if (redirect && redirect.type === "recovery") { authMode("newpw"); setView("auth"); authMsg("Please choose a new password.", "ok"); }
+    else if (session) { setView(show ? "arenas" : "load"); if (redirect) banner("Your email is confirmed — welcome!", "ok", [], 6000); }
+    else { setView("auth"); authMode("signin"); }
+    if (session && navigator.onLine !== false) {
+      freshToken().then(() => (session ? loadUser() : null)).then(() => { if (!session && ui.view !== "auth") { setView("auth"); authMode("signin"); authMsg("Please sign in again.", "err"); } });
+    }
     setInterval(() => {
       tickClock();
       const typing = document.activeElement && /INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName);
       const dlgOpen = $("#dlg").open;
       if (!typing && !dlgOpen && (ui.view === "arenas" || ui.view === "mine")) render();
+      if (session && session.expires_at - 300 < Date.now() / 1000) freshToken();
     }, 20000);
     if ("serviceWorker" in navigator && /^https?:/.test(location.protocol)) {
       navigator.serviceWorker.register("sw.js").catch(() => { /* offline support unavailable */ });
     }
   }
   // expose a tiny hook for automated tests (no secrets here)
-  window.RingsideTimer = { compute: () => compute(true), baseline: () => compute(false), get show() { return show; }, csvToShow, linesToShow, normTime, render, setNow, nowByDraw, toggleScratch };
+  window.RingsideTimer = { compute: () => compute(true), baseline: () => compute(false), get show() { return show; }, planText, csvToShow, linesToShow, normTime, render, setNow, nowByDraw, toggleScratch };
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init); else init();
 })();

@@ -1,3 +1,5 @@
+<p align="center"><img src="icon-512.png" alt="Ringside Timer logo" width="160"></p>
+
 # Ringside Timer
 
 A free, mobile-friendly web tool that estimates **what time each horse-and-rider combination will jump** at a South African showjumping show, using the show schedule, running orders, start times and course changes.
@@ -12,18 +14,20 @@ Live site (once set up): **https://equineintelligence.github.io/ringside-timer**
 
 ## What it does
 
+- **Sign in to use it.** Everyone creates a free account (email + password) and signs in. Accounts are handled by Supabase Auth. Once signed in on a phone, it keeps working offline at the ring.
 - **Load a show** three ways:
   1. **CSV spreadsheet** in the template format (most reliable).
   2. **PDF or Excel schedule** read on the phone itself (free, always available).
-  3. **"Read schedule with AI"** for messy PDFs/Excel files (optional; needs the Supabase setup in `SETUP-SUPABASE.md`). The button stays hidden until `config.js` is filled in.
+  3. **"Read schedule with AI"** for messy PDFs/Excel files (optional; needs the Supabase setup in `SETUP-SUPABASE.md`). 
 - **Check & edit** everything before using it: amber highlights show what needs checking. Add, remove and reorder entries and classes, mark scratches, change times and formats.
 - **Estimated times** for every entry, every class start/finish, lunch breaks and jump-offs.
 - **Live mode** on show day: "Now jumping #__", **Next ▸**, "Started", "Finished", one-tap scratches, and **Undo**. After a few real rounds it switches to the class's real average time per round and says so.
 - **Running X min behind/ahead** per arena.
 - **My riders**: star riders or horses and see only their rounds, in time order, with a countdown ("in ~42 min").
+- **Show plan** for your starred riders and horses: every round with estimated time, arena, class, height, format and draw, as a branded **Print / PDF** page or a ready-made **WhatsApp** message (or copy the text).
 - **Clash warning** when the same rider has two rounds less than 10 minutes apart (in any arena).
 - **Export / share**: download the show as CSV, or as a JSON backup that can be loaded again.
-- Everything is saved **on the phone** (localStorage), so a refresh or lost signal doesn't wipe it.
+- Everything is saved **on the phone** (localStorage), separately for each account, so a refresh or lost signal doesn't wipe it and two people sharing a phone don't see each other's show.
 
 ## How the times are worked out
 
@@ -46,11 +50,12 @@ Estimated time for an entry = class start time + (number of non-scratched horses
 
 ## How to use it
 
-1. Open the site on your phone. Tap **Load the sample show** to try it.
+1. Open the site on your phone, tap **Create account**, then sign in. Tap **Load the sample show** to try it.
 2. Or tap **Download blank template**, fill it in (Excel or Google Sheets → save as CSV), and load it.
 3. Check the **Edit** screen, then tap **Looks good →**.
 4. On show day, at the ring: type the draw number in **Now jumping #** and tap **Go** (or just tap **Next ▸** for each new horse). Tap a horse to scratch it or star it.
-5. Tip: add the site to your home screen (Share → Add to Home Screen) for one-tap access.
+5. In **My riders**, star your riders and tap **Show plan: Print / PDF** or **Send plan on WhatsApp**.
+6. Tip: add the site to your home screen (Share → Add to Home Screen) for one-tap access.
 
 ## The CSV format
 
@@ -77,8 +82,9 @@ Main Arena,2,Newcomers Speed,1.00m,Speed / Table A against the clock,follow,1,An
 | `index.html` | The page |
 | `style.css` | The look |
 | `app.js` | All the logic (timing, live mode, reading files) |
-| `config.js` | Your Supabase URL and public key only (placeholders until setup) |
-| `sw.js`, `manifest.webmanifest`, `icon.svg` | Make it work offline and installable on a phone |
+| `config.js` | Your Supabase URL, public key and (optional) privacy contact email |
+| `sw.js`, `manifest.webmanifest` | Make it work offline and installable on a phone |
+| `icon-512.png`, `icon-192.png`, `apple-touch-icon.png`, `favicon.png` | The Ringside Timer logo in different sizes |
 | `sample-schedule.csv`, `sample-schedule.pdf` | Test data |
 | `supabase/functions/parse-schedule/index.ts` | The AI reading Edge Function (runs on Supabase, not on GitHub) |
 | `supabase/setup.sql` | Database table + security rules + automatic 30-day clean-up |
@@ -103,10 +109,13 @@ You only need a web browser.
 8. Under **Build and deployment** → **Source**, choose **Deploy from a branch**. Under **Branch**, choose **main** and **/ (root)**, then click **Save**.
 9. Wait 1–2 minutes, refresh the page, and you'll see "Your site is live at https://equineintelligence.github.io/ringside-timer/". Open it on your phone.
 
+**Note:** the sign-in screen is a gate in the website itself. Because the website's code is public, a technically skilled person could still read the code and run the free features without an account. The AI reading is properly protected: the Edge Function checks every request's login.
+
 **Updating later:** open the file on GitHub, click the pencil icon to edit (or "Add file → Upload files" to replace it), and commit. The site updates within a couple of minutes. Phones pick up the new version the next time the page is opened (if you change several files, also change `VERSION` at the top of `sw.js`, e.g. `rt-v2`, so phones refresh their offline copy).
 
 ## Privacy (POPIA)
 
+- Accounts store only the email address and a hashed password (Supabase Auth). Users agree to this when they create an account. Set `CONTACT_EMAIL` in `config.js` so people know who to contact to see, correct or delete their details.
 - The show is saved only in the visitor's own browser.
 - The free on-phone reader never sends the file anywhere.
-- "Read schedule with AI" sends the file to an AI service (Anthropic, via your Supabase Edge Function) to be processed. Nothing from the schedule is stored. The only record kept is an anonymous daily-hashed IP, a timestamp and a success/fail flag, deleted automatically after 30 days.
+- "Read schedule with AI" sends the file to an AI service (Anthropic, via your Supabase Edge Function) to be processed. Nothing from the schedule is stored. The only record kept is a daily-scrambled account ID, a timestamp and a success/fail flag, deleted automatically after 30 days.
