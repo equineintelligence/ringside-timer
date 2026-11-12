@@ -19,6 +19,11 @@ do $$ begin
   end if;
 end $$;
 
+-- Token counts per AI read (numbers only), so you can see real costs.
+alter table public.parse_requests add column if not exists input_tokens  integer;
+alter table public.parse_requests add column if not exists output_tokens integer;
+alter table public.parse_requests add column if not exists attempts      smallint;
+
 create index if not exists parse_requests_created_at_idx on public.parse_requests (created_at);
 create index if not exists parse_requests_ip_day_idx     on public.parse_requests (requester_hash, created_at);
 
@@ -38,7 +43,12 @@ select cron.schedule(
   $$ delete from public.parse_requests where created_at < now() - interval '30 days' $$
 );
 
--- Handy checks you can run later (select one line and click Run):
+-- Handy checks you can run later (select one block and click Run):
+--   Average tokens and estimated cost per successful read, per day (Haiku 5.5 prices under 100k tokens):
+--   select date_trunc('day', created_at) as day, count(*) as reads,
+--          round(avg(input_tokens)) as avg_in, round(avg(output_tokens)) as avg_out,
+--          round(avg(input_tokens * 0.10 + output_tokens * 0.50) / 1e6, 4) as avg_usd
+--     from public.parse_requests where success group by 1 order by 1 desc;
 --   select count(*) filter (where success) as ok, count(*) filter (where not success) as failed
 --     from public.parse_requests where created_at > now() - interval '1 day';
 --   select * from cron.job;                                  -- see the clean-up job

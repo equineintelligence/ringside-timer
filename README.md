@@ -24,6 +24,8 @@ Live site (once set up): **https://equineintelligence.github.io/ringside-timer**
 - **Live mode** on show day: "Now jumping #__", **Next ▸**, "Started", "Finished", one-tap scratches, and **Undo**. After a few real rounds it switches to the class's real average time per round and says so.
 - **Running X min behind/ahead** per arena.
 - **My riders**: star riders or horses and see only their rounds, in time order, with a countdown ("in ~42 min").
+- **Live shows**: an organiser publishes a show; every signed-in user can follow it from the **Live** tab (or a shared link), and the times update automatically about every 15 seconds.
+- **Marshal timing screen**: arena marshals enter a private marshal code, then tap one big **NEXT** button each time a horse enters the ring. It records the actual time each rider went in, scratchings, and class start/finish. It keeps working without signal and sends updates when the phone is back online.
 - **Show plan** for your starred riders and horses: every round with estimated time, arena, class, height, format and draw, as a branded **Print / PDF** page or a ready-made **WhatsApp** message (or copy the text).
 - **Clash warning** when the same rider has two rounds less than 10 minutes apart (in any arena).
 - **Export / share**: download the show as CSV, or as a JSON backup that can be loaded again.
@@ -56,6 +58,14 @@ Estimated time for an entry = class start time + (number of non-scratched horses
 4. On show day, at the ring: type the draw number in **Now jumping #** and tap **Go** (or just tap **Next ▸** for each new horse). Tap a horse to scratch it or star it.
 5. In **My riders**, star your riders and tap **Show plan: Print / PDF** or **Send plan on WhatsApp**.
 6. Tip: add the site to your home screen (Share → Add to Home Screen) for one-tap access.
+
+## Live shows: how it works
+
+1. **Publish.** Load the show (CSV, PDF/Excel or AI), check it, then go to **Live → Publish as a live show**. Tick the box confirming you may share the running order. You get a **marshal code** (6 letters/numbers).
+2. **Marshals.** Tap **Send to marshals** to send them a WhatsApp message with the link and code. Each marshal signs in, opens the show, taps **I'm a marshal** and enters the code. Their **Marshal timing screen** shows who's in the ring, a big **NEXT** button, **Scratch**, **Undo** and **Finish class**.
+3. **Everyone else.** Riders, grooms and parents open **Live** and tap the show, or use the link from **Share link to this show**. They see the estimated times correcting themselves as the marshals record each round, can star their riders and get the show plan. They can't change anything.
+4. **Changes.** Only the publisher can edit the schedule (Edit tab); edits reach everyone automatically. **Change code** locks out old marshals. **Remove live show** deletes it for everyone.
+5. **Privacy.** Published shows (with riders' and horses' names) are deleted automatically **7 days after the show date**. Only signed-in users can see them, and the database itself enforces who may change what.
 
 ## The CSV format
 

@@ -188,7 +188,24 @@ Follow **"Putting it on GitHub Pages"** in `README.md` (repository `ringside-tim
 
 To see who has signed up: **Authentication → Users**. You can delete a user there if they ask (POPIA).
 
+## Step 12 — Live shows (shared shows and marshals)
+
+1. **SQL Editor → New query.** Paste the whole of `supabase/live-shows.sql` and click **Run** (confirm the "destructive operations" warning; it refers only to resetting the new tables' own rules).
+2. To confirm it worked, run:
+   ```sql
+   select count(*) from public.shows;      -- should run without error (0 to start)
+   select * from cron.job;                 -- should list ringside-delete-old-shows
+   ```
+3. Test with two phones: publish the sample show on one (Live → Publish), open it on the other, enter the marshal code, tap NEXT a few times, and watch the first phone update within about 15 seconds.
+
+**Useful checks later**
+
+- See published shows: **Table Editor → shows** (or `select name, show_date, live_updated_at from public.shows order by created_at desc;`).
+- Remove a show (for example on request): delete its row in **Table Editor → shows**. Its marshal code and marshal list are removed with it.
+
 ## POPIA notes
+
+- Live shows store the schedule, including riders' and horses' names, so all signed-in users can follow them. The publisher confirms they're allowed to share the running order, and each show is deleted automatically 7 days after its show date (job `ringside-delete-old-shows`). Only the publisher and their marshals can change a show; this is enforced by Row Level Security and database functions, not just the website.
 
 - Accounts store an email address and a hashed password in Supabase Auth (hosted in the EU). People agree to this on the sign-up form. Put a contact email in `config.js` (`CONTACT_EMAIL`) so users know who to ask to see, correct or delete their details.
 

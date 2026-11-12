@@ -111,7 +111,7 @@ input[type="checkbox"] { width: 24px; height: 24px; min-height: 0; display: inli
 
 /* Bottom tab bar */
 .tabbar {
-  position: fixed; left: 0; right: 0; bottom: 0; z-index: 30; display: grid; grid-template-columns: repeat(4, 1fr);
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 30; display: grid; grid-auto-flow: column; grid-auto-columns: 1fr;
   background: var(--surface); border-top: 1px solid var(--line); padding-bottom: env(safe-area-inset-bottom);
 }
 .tabbar button { min-height: 62px; border: 0; background: transparent; color: var(--muted); font: inherit; font-size: .82rem; font-weight: 600; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; cursor: pointer; }
@@ -267,3 +267,40 @@ dialog .opt { width: 100%; margin-bottom: 8px; }
 .print-plan h2 { font-size: 12pt; color: #022247; margin: 14px 0 4px; }
 .print-plan .pp-note { font-size: 9pt; color: #444; margin-top: 12px; }
 .print-plan .pp-riders { columns: 2; font-size: 10pt; margin: 4px 0 0; padding-left: 1.1rem; }
+
+/* Live shows */
+.live-strip { display: block; width: 100%; max-width: 760px; margin: 0 auto; padding: 8px 16px; border: 0; border-bottom: 1px solid var(--line); background: var(--now-bg); color: var(--text); font: inherit; font-size: .9rem; text-align: left; cursor: pointer; }
+.live-strip .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: #d92d20; margin-right: 6px; vertical-align: middle; animation: pulse 1.6s ease-in-out infinite; }
+.live-strip.waiting { background: var(--warn-bg); }
+@keyframes pulse { 50% { opacity: .35; } }
+@media (prefers-reduced-motion: reduce) { .live-strip .dot { animation: none; } }
+.live-card { border: 2px solid var(--gold); }
+.show-item { display: flex; width: 100%; justify-content: space-between; align-items: center; gap: 10px; text-align: left; min-height: 64px; padding: 12px 14px; margin-bottom: 10px; border-radius: var(--radius); border: 1px solid var(--line); background: var(--surface); color: var(--text); font: inherit; cursor: pointer; }
+.show-item.current { border: 2px solid var(--now); }
+.live-current { border: 2px solid var(--now); }
+.owner-box { margin-top: 14px; padding-top: 12px; border-top: 1px dashed var(--line); }
+.code-big { font-size: 2rem; font-weight: 800; letter-spacing: .2em; font-variant-numeric: tabular-nums; margin: 4px 0 8px; color: var(--accent); }
+label.inline { display: flex; gap: 6px; align-items: flex-start; font-weight: 500; color: var(--text); }
+label.inline input { flex: none; margin-top: 2px; }
+
+/* Marshal screen */
+.m-status { margin: 10px 0; font-weight: 600; color: var(--muted); }
+.m-now { border: 2px solid var(--now); background: var(--now-bg); border-radius: var(--radius); padding: 12px 14px; margin-bottom: 12px; }
+.m-label { font-size: .8rem; font-weight: 800; letter-spacing: .08em; color: var(--now); }
+.m-who { font-size: 1.5rem; font-weight: 800; line-height: 1.2; }
+.m-horse { font-size: 1.1rem; color: var(--muted); }
+.m-time { font-weight: 700; margin-top: 4px; font-variant-numeric: tabular-nums; }
+.m-next { display: flex; flex-direction: column; align-items: center; justify-content: center; width: 100%; min-height: 110px; border: 0; border-radius: 16px; background: var(--accent); color: var(--accent-text); font: inherit; cursor: pointer; padding: 12px; box-shadow: 0 4px 0 rgba(0,0,0,.25); }
+.m-next span { font-size: 1.9rem; font-weight: 900; letter-spacing: .04em; }
+.m-next small { font-size: 1rem; opacity: .95; margin-top: 4px; }
+.m-next:active { transform: translateY(3px); box-shadow: 0 1px 0 rgba(0,0,0,.25); }
+.m-next.done { background: var(--bad); color: #fff; }
+.m-finished { padding: 16px; text-align: center; font-weight: 800; border-radius: var(--radius); background: var(--surface-2); }
+.m-tools { margin: 12px 0; }
+.m-list { list-style: none; margin: 0; padding: 0; }
+.m-list li { display: grid; grid-template-columns: 1fr auto; gap: 6px; align-items: center; border-top: 1px solid var(--line); }
+.m-row { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: baseline; width: 100%; min-height: 54px; padding: 8px 4px; border: 0; background: none; color: var(--text); font: inherit; text-align: left; cursor: pointer; }
+.m-row em { margin-left: auto; font-style: normal; font-weight: 700; font-variant-numeric: tabular-nums; }
+.m-list li.now { background: var(--now-bg); }
+.m-list li.done .m-row { color: var(--muted); }
+.m-list li.scr .m-row { text-decoration: line-through; color: var(--muted); }

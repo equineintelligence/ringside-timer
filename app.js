@@ -128,7 +128,7 @@
   const CFG = window.RINGSIDE_CONFIG || {};
   const aiConfigured = !!(CFG.SUPABASE_URL && CFG.SUPABASE_ANON_KEY && !/YOUR-/.test(CFG.SUPABASE_URL + CFG.SUPABASE_ANON_KEY));
 
-  function saveShow() { if (show) store(ukey("show"), show); }
+  function saveShow() { if (show) store(ukey(show.cloud ? "cloud" : "show"), show); }
   function saveSettings() { store("rt.settings", S); }
   function saveStars() { store(ukey("stars"), stars); }
 
@@ -490,12 +490,14 @@
   // Timing engine
   // ===================================================================
   function defaultSpr(format) {
-    if (format === FORMATS[0]) return +S.sprSpeed;
-    if (format === FORMATS[1]) return +S.sprTwoPhase;
-    return +S.sprNormal;
+    const TS = T();
+    if (format === FORMATS[0]) return +TS.sprSpeed;
+    if (format === FORMATS[1]) return +TS.sprTwoPhase;
+    return +TS.sprNormal;
   }
   function actualAvg(c, starters) {
-    const lv = c.live; const minN = Math.max(2, +S.avgAfter || 3);
+    const TS = T();
+    const lv = c.live; const minN = Math.max(2, +TS.avgAfter || 3);
     const marks = (lv.marks || []).map((m) => ({ pos: starters.findIndex((e) => e.id === m.id), t: m.t })).filter((m) => m.pos >= 0).sort((a, b) => a.t - b.t);
     let r = null;
     if (lv.startedAt != null) {
@@ -512,10 +514,11 @@
   function hasLive(c) { const l = c.live; return l.startedAt != null || l.finishedAt != null || l.nowId != null; }
 
   function compute(useLive) {
+    const TS = T();
     const now = saNow();
     const today = !show.date || show.date === now.date;
     const out = { cls: {}, ent: {}, arenas: {} };
-    const prize = S.prizeMin * 60, walkS = S.walkMin * 60, reb = S.changeRebuiltMin * 60, same = S.changeSameMin * 60;
+    const prize = TS.prizeMin * 60, walkS = TS.walkMin * 60, reb = TS.changeRebuiltMin * 60, same = TS.changeSameMin * 60;
     show.arenas.forEach((a) => {
       const list = show.classes.filter((c) => c.arena === a.name);
       const L = parseTime(a.lunchStart); const D = (+a.lunchMin || 0) * 60;
@@ -531,7 +534,7 @@
         const spr = avg ? avg.spr : defaultSpr(c.format);
         const sched = parseTime(c.start);
         let cand, lunch = null;
-        if (prevEnd == null) cand = sched != null ? sched : parseTime(S.dayStart) || 8 * 3600;
+        if (prevEnd == null) cand = sched != null ? sched : parseTime(TS.dayStart) || 8 * 3600;
         else {
           const afterPrize = prevEnd + prize;
           const walk = c.sameCourse ? 0 : walkS;
@@ -552,6 +555,7 @@
         const finished = lv.finishedAt != null || (useLive && ci < lastLive);
         const inProgress = !finished && (lv.startedAt != null || nowIdx >= 0);
         let lastT = null;
+        const markAt = {}; (lv.marks || []).forEach((m) => (markAt[m.id] = m.t));
         c.entries.forEach((e) => {
           if (e.status === "scratched") out.ent[e.id] = { t: null, state: "scratched", cls: c.id };
         });
@@ -559,7 +563,7 @@
           let t, state;
           if (nowIdx >= 0) {
             if (i < nowIdx) {
-              t = lv.startedAt != null && nowIdx > 0 ? lv.startedAt + i * (lv.nowAt - lv.startedAt) / nowIdx : start + i * spr;
+              t = markAt[e.id] != null ? markAt[e.id] : lv.startedAt != null && nowIdx > 0 ? lv.startedAt + i * (lv.nowAt - lv.startedAt) / nowIdx : start + i * spr;
               state = "done";
             } else if (i === nowIdx) { t = lv.nowAt; state = "now"; }
             else {
@@ -569,13 +573,13 @@
             }
           } else { t = start + i * spr; state = e.status === "done" ? "done" : "upcoming"; }
           if (finished) state = "done";
-          out.ent[e.id] = { t, state, cls: c.id };
+          out.ent[e.id] = { t, state, cls: c.id, actual: markAt[e.id] != null && (state === "done" || state === "now") };
           lastT = t;
         });
         const firstEnd = N ? lastT + spr : start;
         let end = firstEnd, extra = null;
-        if (c.format === FORMATS[2]) { const n = Math.round(N * S.joPct / 100); extra = { label: "Jump-off", n, start: firstEnd }; end = firstEnd + n * S.joSec; }
-        else if (c.format === FORMATS[3]) { const n = Math.ceil(N * S.r2Pct / 100); extra = { label: "Round 2", n, start: firstEnd }; end = firstEnd + n * spr; }
+        if (c.format === FORMATS[2]) { const n = Math.round(N * TS.joPct / 100); extra = { label: "Jump-off", n, start: firstEnd }; end = firstEnd + n * TS.joSec; }
+        else if (c.format === FORMATS[3]) { const n = Math.ceil(N * TS.r2Pct / 100); extra = { label: "Round 2", n, start: firstEnd }; end = firstEnd + n * spr; }
         if (lv.finishedAt != null) end = lv.finishedAt;
         else if (finished) end = Math.max(end, start);
         out.cls[c.id] = { start, planned, end, sched, late: sched != null ? start - sched : null, spr, avg, sprDefault: defaultSpr(c.format), startSrc, finished, inProgress, extra, lunch, N, nowIdx };
@@ -596,6 +600,7 @@
   }
 
   function findClashes(R) {
+    const TS = T();
     const by = {};
     show.classes.forEach((c) => c.entries.forEach((e) => {
       const r = R.ent[e.id];
@@ -606,7 +611,7 @@
     Object.values(by).forEach((arr) => {
       arr.sort((x, y) => x.t - y.t);
       for (let i = 1; i < arr.length; i++) {
-        if (arr[i].t - arr[i - 1].t < S.clashMin * 60) { pairs.push([arr[i - 1], arr[i]]); ids.add(arr[i - 1].e.id); ids.add(arr[i].e.id); }
+        if (arr[i].t - arr[i - 1].t < TS.clashMin * 60) { pairs.push([arr[i - 1], arr[i]]); ids.add(arr[i - 1].e.id); ids.add(arr[i].e.id); }
       }
     });
     return { pairs, ids };
@@ -621,7 +626,7 @@
     if (!ui.undo) return;
     const c = classById(ui.undo.id);
     if (c) { c.live = ui.undo.live; c.entries = ui.undo.entries; }
-    ui.undo = null; saveShow(); hideBanner(); render();
+    ui.undo = null; saveShow(); if (c) cloudTouch(c); hideBanner(); render();
   }
   function setNow(c, e, t) {
     pushUndo(c, "Now jumping #" + (e.draw || "?") + " — " + e.rider);
@@ -632,7 +637,7 @@
     c.live.marks = (c.live.marks || []).filter((m) => m.id !== e.id).concat([{ id: e.id, t: time }]);
     if (idx === 0 && c.live.startedAt == null) c.live.startedAt = time;
     ui.open[c.id] = true;
-    saveShow(); render();
+    saveShow(); cloudTouch(c); render();
   }
   function nextHorse(c) {
     const starters = c.entries.filter((x) => x.status !== "scratched");
@@ -653,7 +658,7 @@
     pushUndo(c, (e.status === "scratched" ? "Un-scratched " : "Scratched ") + "#" + (e.draw || "?") + " " + e.rider);
     e.status = e.status === "scratched" ? "starting" : "scratched";
     if (e.status === "scratched" && c.live.nowId === e.id) { c.live.nowId = null; c.live.nowAt = null; }
-    saveShow(); render();
+    saveShow(); cloudTouch(c); render();
   }
 
   // ===================================================================
@@ -740,6 +745,11 @@
     try { show = sh ? normalizeShow(sh) : null; } catch (e) { show = null; }
     stars = Object.assign({ riders: [], horses: [] }, st || {});
     if (show) saveShow(); saveStars();
+    // re-open the live show this person was following, if any
+    const cached = load(ukey("cloud"));
+    if (load(ukey("active")) === "cloud" && cached && cached.cloud) {
+      try { show = normalizeShow(cached); pending = load(ukey("pending." + show.cloud.id)) || { classes: {}, status: {} }; } catch (e) { /* keep local show */ }
+    }
     ui.open = {}; ui.arena = null;
   }
 
@@ -762,6 +772,8 @@
     loadUserData();
     setView(show ? "arenas" : "load");
     if (msg) banner(esc(msg), "ok", [], 6000);
+    if (ui.deepShow) { openCloudShow(ui.deepShow); ui.deepShow = null; }
+    else if (isCloud()) { startPolling(); pollCloud(true); flushPending(); }
   }
   function bindAuth() {
     $("#view-auth").addEventListener("click", (ev) => {
@@ -818,6 +830,7 @@
       const r = await dialog("Sign out?", "<p>Your show stays saved on this phone for when you sign in again.</p>", [{ label: "Cancel", value: "no" }, { label: "Sign out", value: "yes", cls: "danger" }]);
       if (r.value !== "yes") return;
       const t = session && session.access_token;
+      clearInterval(cloudUI.pollTimer); pending = { classes: {}, status: {} }; cloudUI.list = null;
       clearSession(); show = null; stars = { riders: [], horses: [] };
       if (t) authFetch("logout", null, "POST", t).catch(() => {});
       authMode("signin"); setView("auth");
@@ -891,6 +904,380 @@
   }
 
   // ===================================================================
+  // Live shows (shared online): publish, view, marshal
+  // Shows are stored in Supabase; phones check for marshal updates every ~15 s.
+  // ===================================================================
+  const POLL_MS = 15000;
+  const TIMING_KEYS = ["sprNormal", "sprSpeed", "sprTwoPhase", "walkMin", "changeRebuiltMin", "changeSameMin", "prizeMin", "joPct", "joSec", "r2Pct", "dayStart", "avgAfter"];
+  const cloudUI = { list: null, myMarshal: [], pollTimer: null, flushing: false, schedTimer: null, lastPoll: null, code: null };
+  let pending = { classes: {}, status: {} };
+
+  function isCloud() { return !!(show && show.cloud); }
+  function role() { return isCloud() ? show.cloud.role : "local"; }
+  function canEdit() { return !isCloud() || role() === "owner" || role() === "marshal"; }
+  function pendingCount() { return Object.keys(pending.classes).length + Object.keys(pending.status).length; }
+  function savePending() { if (isCloud()) store(ukey("pending." + show.cloud.id), pending); }
+  // Effective timing settings: viewers and marshals use the publisher's settings so everyone sees the same estimates.
+  function T() { return isCloud() && role() !== "owner" && show.cloudSettings ? Object.assign({}, S, show.cloudSettings) : S; }
+
+  async function api(path, opts) {
+    opts = opts || {};
+    const t = await freshToken();
+    if (!t) throw Object.assign(new Error("Please sign in again."), { code: "login_required" });
+    const headers = Object.assign({ apikey: CFG.SUPABASE_ANON_KEY, Authorization: "Bearer " + t, "Content-Type": "application/json" }, opts.headers || {});
+    let res;
+    try { res = await fetch(CFG.SUPABASE_URL.replace(/\/$/, "") + "/rest/v1/" + path, { method: opts.method || "GET", headers, body: opts.body != null ? JSON.stringify(opts.body) : undefined }); }
+    catch (e) { throw Object.assign(new Error("No connection right now."), { code: "network" }); }
+    if (res.status === 204) return null;
+    let data = null; try { data = await res.json(); } catch (e) { /* empty */ }
+    if (!res.ok) {
+      const m = (data && (data.message || data.hint)) || "";
+      const msgs = {
+        not_marshal: "You're not a marshal for this show. Enter the marshal code first.",
+        not_owner: "Only the person who published this show can do that.",
+        too_many_attempts: "Too many wrong codes. Please wait an hour and try again.",
+        too_many_shows: "You've published a lot of shows today. Please try again tomorrow.",
+        login_required: "Please sign in again."
+      };
+      throw Object.assign(new Error(msgs[m] || (m ? m : "Server error (" + res.status + ")")), { code: m || res.status, status: res.status });
+    }
+    return data;
+  }
+  const rpc = (fn, args) => api("rpc/" + fn, { method: "POST", body: args });
+
+  function scheduleOf(sh) {
+    const st = {}; TIMING_KEYS.forEach((k) => (st[k] = S[k]));
+    return {
+      name: sh.name, date: sh.date, settings: st,
+      arenas: sh.arenas.map((a) => ({ name: a.name, lunchStart: a.lunchStart || "", lunchMin: +a.lunchMin || 0 })),
+      classes: sh.classes.map((c) => ({
+        id: c.id, arena: c.arena, no: c.no, name: c.name, height: c.height, format: c.format, start: c.start, sameCourse: !!c.sameCourse,
+        entries: c.entries.map((e) => ({ id: e.id, draw: e.draw, rider: e.rider, horse: e.horse, status: e.status === "scratched" ? "scratched" : "starting" }))
+      }))
+    };
+  }
+  // Build the show we display from the server copy (schedule + live), then re-apply this phone's unsent changes.
+  function buildCloudShow(row, roleName) {
+    const sc = row.schedule || {};
+    const sh = normalizeShow({ name: row.name || sc.name, date: row.show_date || sc.date || "", arenas: sc.arenas, classes: clone(sc.classes || []) });
+    sh.cloudSettings = sc.settings || null;
+    sh.cloud = { id: row.id, role: roleName, owner: row.owner, liveVersion: row.live_version || 0, scheduleVersion: row.schedule_version || 1, liveUpdatedAt: row.live_updated_at || null };
+    applyLive(sh, row.live || {});
+    return sh;
+  }
+  function applyLive(sh, live) {
+    const lc = Object.assign({}, live.classes || {}, pending.classes);
+    const ls = Object.assign({}, live.status || {}, pending.status);
+    sh.classes.forEach((c) => {
+      c.live = Object.assign(blankLive(), lc[c.id] || {});
+      c.entries.forEach((e) => { if (ls[e.id]) e.status = ls[e.id]; });
+    });
+  }
+  // Called after every live change on this phone (marshal or publisher).
+  function cloudTouch(c) {
+    if (!isCloud() || !canEdit() || !c) return;
+    pending.classes[c.id] = clone(c.live);
+    c.entries.forEach((e) => (pending.status[e.id] = e.status === "done" ? "starting" : e.status));
+    savePending(); flushPending();
+  }
+  async function flushPending() {
+    if (!isCloud() || cloudUI.flushing || !pendingCount()) { renderLiveStrip(); return; }
+    cloudUI.flushing = true;
+    const id = show.cloud.id;
+    const batch = pending; pending = { classes: {}, status: {} };
+    try {
+      const ver = await rpc("rt_live_update", { p_show: id, p_patch: batch });
+      if (isCloud() && show.cloud.id === id) { show.cloud.liveVersion = ver; show.cloud.liveUpdatedAt = new Date().toISOString(); }
+    } catch (e) {
+      // keep the changes and try again later (newer changes win)
+      pending = { classes: Object.assign({}, batch.classes, pending.classes), status: Object.assign({}, batch.status, pending.status) };
+      if (e.code === "not_marshal" || e.code === "not_owner") { pending = { classes: {}, status: {} }; if (isCloud()) { show.cloud.role = "viewer"; saveShow(); } banner(esc(e.message), "err", [], 8000); }
+    } finally {
+      cloudUI.flushing = false; savePending(); renderLiveStrip();
+      if (pendingCount() && navigator.onLine !== false) setTimeout(flushPending, 5000);
+    }
+  }
+  async function pollCloud(force) {
+    if (!isCloud() || (document.visibilityState === "hidden" && !force)) return;
+    const id = show.cloud.id;
+    try {
+      const rows = await api("shows?id=eq." + id + "&select=live_version,schedule_version,live_updated_at,published");
+      if (!isCloud() || show.cloud.id !== id) return;
+      if (!rows || !rows.length || (!rows[0].published && role() !== "owner")) {
+        banner("This live show has been removed by its publisher.", "err", [], 8000); leaveCloud(); return;
+      }
+      const r = rows[0];
+      cloudUI.lastPoll = Date.now();
+      if (force || r.schedule_version !== show.cloud.scheduleVersion || r.live_version !== show.cloud.liveVersion) {
+        const full = await api("shows?id=eq." + id + "&select=id,owner,name,show_date,schedule,schedule_version,live,live_version,live_updated_at");
+        if (!full || !full.length || !isCloud() || show.cloud.id !== id) return;
+        if (role() === "owner" && cloudUI.schedTimer) return; // publisher has unsaved schedule edits: don't overwrite them
+        const keepOpen = ui.open, keepArena = ui.arena;
+        show = buildCloudShow(full[0], role());
+        ui.open = keepOpen; ui.arena = keepArena;
+        saveShow();
+        const typing = document.activeElement && /INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName);
+        if (!typing && !$("#dlg").open && ui.view !== "review") render();
+      }
+    } catch (e) { /* offline or server busy: try again next time */ }
+    renderLiveStrip();
+  }
+  function startPolling() {
+    clearInterval(cloudUI.pollTimer);
+    if (!isCloud()) return;
+    cloudUI.pollTimer = setInterval(() => { pollCloud(false); flushPending(); }, POLL_MS);
+  }
+  // Publisher edits the schedule: send it a couple of seconds after they stop typing.
+  function cloudScheduleChanged() {
+    if (!isCloud() || role() !== "owner") return;
+    clearTimeout(cloudUI.schedTimer);
+    cloudUI.schedTimer = setTimeout(pushSchedule, 2500);
+    renderLiveStrip();
+  }
+  async function pushSchedule() {
+    if (!isCloud() || role() !== "owner") return;
+    const id = show.cloud.id, v = show.cloud.scheduleVersion + 1;
+    try {
+      await api("shows?id=eq." + id, { method: "PATCH", headers: { Prefer: "return=minimal" }, body: { name: show.name || "Show", show_date: /^\d{4}-\d{2}-\d{2}$/.test(show.date || "") ? show.date : null, schedule: scheduleOf(show), schedule_version: v, updated_at: new Date().toISOString() } });
+      show.cloud.scheduleVersion = v; cloudUI.schedTimer = null; saveShow();
+    } catch (e) { cloudUI.schedTimer = setTimeout(pushSchedule, 10000); }
+    renderLiveStrip();
+  }
+
+  async function publishShow() {
+    if (!show || isCloud()) return;
+    const r = await dialog("Publish as a live show?",
+      "<p>Everyone signed in to Ringside Timer will be able to see <strong>" + esc(show.name) + "</strong> and follow it live. You'll get a marshal code to give your arena marshals.</p>" +
+      '<p class="small muted">Riders\' and horses\' names will be stored online and deleted automatically 7 days after the show date (' + esc(show.date || "today") + ").</p>" +
+      '<label class="inline"><input type="checkbox" name="ok" value="yes">I confirm I\'m allowed to share this running order publicly (for example, it was published by the show organiser).</label>',
+      [{ label: "Cancel", value: "no" }, { label: "Publish", value: "yes", cls: "primary" }]);
+    if (r.value !== "yes") return;
+    if (!$('#dlgBody input[name="ok"]') || r.vals.ok !== "yes") { banner("Please tick the box to confirm you may share this running order.", "err", [], 6000); return; }
+    busy(true, "Publishing…");
+    try {
+      const res = await rpc("rt_publish_show", { p_name: show.name || "Show", p_date: /^\d{4}-\d{2}-\d{2}$/.test(show.date || "") ? show.date : null, p_schedule: scheduleOf(show) });
+      const full = await api("shows?id=eq." + res.id + "&select=id,owner,name,show_date,schedule,schedule_version,live,live_version,live_updated_at");
+      pending = { classes: {}, status: {} };
+      show = buildCloudShow(full[0], "owner"); cloudUI.code = res.code;
+      store(ukey("active"), "cloud"); saveShow(); startPolling();
+      setView("live");
+      showCodeDialog(res.code);
+    } catch (e) { banner("Couldn't publish: " + esc(e.message), "err", [], 8000); }
+    finally { busy(false); }
+  }
+  function shareLink() { return SITE_URL + "?show=" + encodeURIComponent(show.cloud.id); }
+  async function showCodeDialog(code) {
+    const msg = "You're an arena marshal for *" + show.name + "* on Ringside Timer.\n1. Open " + shareLink() + " and sign in (free account)\n2. Tap \"I'm a marshal\" and enter code: *" + code + "*\n3. Use the Marshal screen to record who's in the ring and scratchings.";
+    const r = await dialog("Marshal code", '<p class="code-big">' + esc(code) + "</p><p>Give this code only to your arena marshals. Anyone with it can update the live times. You can change it later.</p>",
+      [{ label: "Close", value: "x" }, { label: "Send to marshals on WhatsApp", value: "wa", cls: "primary" }]);
+    if (r.value === "wa") window.open("https://wa.me/?text=" + encodeURIComponent(msg), "_blank", "noopener");
+  }
+  async function openCloudShow(id, quiet) {
+    busy(true, "Opening live show…");
+    try {
+      const rows = await api("shows?id=eq." + encodeURIComponent(id) + "&select=id,owner,name,show_date,schedule,schedule_version,live,live_version,live_updated_at,published");
+      if (!rows || !rows.length) throw new Error("This live show wasn't found. It may have been removed.");
+      const row = rows[0];
+      let rl = "viewer";
+      if (row.owner === (session && session.user && session.user.id)) rl = "owner";
+      else { const m = await api("show_marshals?show_id=eq." + row.id + "&select=show_id"); if (m && m.length) rl = "marshal"; }
+      if (!isCloud() || show.cloud.id !== row.id) pending = load(ukey("pending." + row.id)) || { classes: {}, status: {} };
+      show = buildCloudShow(row, rl); ui.open = {}; ui.arena = null; cloudUI.code = null;
+      store(ukey("active"), "cloud"); saveShow(); startPolling(); flushPending();
+      setView(rl === "viewer" ? "arenas" : "live");
+      if (!quiet) banner("Following <strong>" + esc(show.name) + "</strong> live" + (rl === "marshal" ? " as a marshal." : rl === "owner" ? " as the publisher." : ". Times update automatically."), "ok", [], 6000);
+    } catch (e) { banner(esc(e.message), "err", [], 8000); }
+    finally { busy(false); }
+  }
+  function leaveCloud() {
+    clearInterval(cloudUI.pollTimer); clearTimeout(cloudUI.schedTimer); cloudUI.schedTimer = null;
+    store(ukey("active"), "local");
+    let sh = load(ukey("show"));
+    try { show = sh ? normalizeShow(sh) : null; } catch (e) { show = null; }
+    ui.open = {}; ui.arena = null;
+    setView(show ? "live" : "load");
+  }
+  async function joinMarshal() {
+    const r = await dialog("I'm a marshal", '<p>Enter the marshal code the show publisher gave you.</p><label>Marshal code<input name="code" autocomplete="off" autocapitalize="characters" maxlength="12" style="font-size:1.4rem;letter-spacing:.15em;text-transform:uppercase"></label>',
+      [{ label: "Cancel", value: "no" }, { label: "Join as marshal", value: "yes", cls: "primary" }]);
+    if (r.value !== "yes" || !r.vals.code) return;
+    busy(true, "Checking code…");
+    try {
+      const ok = await rpc("rt_join_marshal", { p_show: show.cloud.id, p_code: r.vals.code.trim().toUpperCase() });
+      if (!ok) { banner("That code isn't right. Check it with the show publisher.", "err", [], 6000); return; }
+      show.cloud.role = "marshal"; saveShow();
+      setView("marshal");
+      banner("You're now a marshal for this show. Tap NEXT each time a new horse enters the ring.", "ok", [], 8000);
+    } catch (e) { banner(esc(e.message), "err", [], 8000); }
+    finally { busy(false); }
+  }
+  async function newCode() {
+    const r = await dialog("Change the marshal code?", "<p>Current marshals will need the new code to keep updating.</p>", [{ label: "Cancel", value: "no" }, { label: "Change code", value: "yes", cls: "danger" }]);
+    if (r.value !== "yes") return;
+    try { cloudUI.code = await rpc("rt_get_code", { p_show: show.cloud.id, p_new: true }); renderLive(); showCodeDialog(cloudUI.code); }
+    catch (e) { banner(esc(e.message), "err", [], 6000); }
+  }
+  async function removeShow() {
+    const r = await dialog("Remove this live show?", "<p>It disappears for everyone straight away and is deleted from the server. Your own copy stays on this phone.</p>", [{ label: "Cancel", value: "no" }, { label: "Remove", value: "yes", cls: "danger" }]);
+    if (r.value !== "yes") return;
+    try { await api("shows?id=eq." + show.cloud.id, { method: "DELETE", headers: { Prefer: "return=minimal" } }); banner("Live show removed.", "ok", [], 5000); leaveCloud(); }
+    catch (e) { banner(esc(e.message), "err", [], 6000); }
+  }
+  async function loadShowList() {
+    try {
+      const since = new Date(Date.now() - 8 * 864e5).toISOString().slice(0, 10);
+      cloudUI.list = await api("shows?select=id,owner,name,show_date,live_updated_at,created_at&published=is.true&or=(show_date.gte." + since + ",show_date.is.null)&order=show_date.desc.nullslast,created_at.desc&limit=60");
+      const m = await api("show_marshals?select=show_id");
+      cloudUI.myMarshal = (m || []).map((x) => x.show_id);
+      cloudUI.listError = null;
+    } catch (e) { cloudUI.listError = e.message; }
+    if (ui.view === "live") renderLive();
+  }
+  function ago(iso) {
+    if (!iso) return "no live updates yet";
+    const s = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 1000));
+    if (s < 60) return "updated " + s + " s ago";
+    if (s < 3600) return "updated " + Math.round(s / 60) + " min ago";
+    return "updated " + Math.round(s / 3600) + " h ago";
+  }
+  function renderLiveStrip() {
+    const el = $("#liveStrip"); if (!el) return;
+    if (!isCloud() || ui.view === "auth") { el.hidden = true; return; }
+    const rl = role(), n = pendingCount() + (cloudUI.schedTimer ? 1 : 0);
+    const who = rl === "owner" ? "Publisher" : rl === "marshal" ? "Marshal" : "Viewing";
+    const sync = canEdit() ? (n ? " · ⏳ " + n + " update" + (n > 1 ? "s" : "") + " waiting to send" : " · ✓ all sent") : "";
+    el.hidden = false;
+    el.className = "live-strip" + (n ? " waiting" : "");
+    el.innerHTML = '<span class="dot"></span><strong>LIVE</strong> · ' + who + " · " + esc(ago(show.cloud.liveUpdatedAt)) + esc(sync);
+  }
+
+  // ---------- Live tab ----------
+  function renderLive() {
+    const box = $("#liveBody"); if (!box) return;
+    let h = "";
+    if (isCloud()) {
+      const rl = role();
+      h += '<div class="card live-current"><h3>' + esc(show.name) + '</h3><p class="muted">' + esc(show.date || "") + " · " + (rl === "owner" ? "You published this show" : rl === "marshal" ? "You're a marshal for this show" : "You're following this show live") + "</p>";
+      h += '<div class="row-btns">';
+      if (rl === "owner" || rl === "marshal") h += '<button class="btn primary" type="button" data-lv="marshal">Open marshal timing screen</button>';
+      h += '<button class="btn" type="button" data-lv="arenas">See times by arena</button>';
+      if (rl === "viewer") h += '<button class="btn" type="button" data-lv="join">I\'m a marshal</button>';
+      h += '<button class="btn" type="button" data-lv="sharelink">Share link to this show</button>';
+      h += '<button class="btn" type="button" data-lv="leave">Stop following</button></div>';
+      if (rl === "owner") {
+        h += '<div class="owner-box"><h3>Marshal code</h3><p class="code-big" id="codeBox">' + esc(cloudUI.code || "••••••") + '</p><div class="row-btns">' +
+          (cloudUI.code ? "" : '<button class="btn small" type="button" data-lv="showcode">Show code</button>') +
+          '<button class="btn small" type="button" data-lv="sendcode">Send to marshals</button><button class="btn small" type="button" data-lv="newcode">Change code</button>' +
+          '<button class="btn small danger" type="button" data-lv="remove">Remove live show</button></div>' +
+          '<p class="muted small">Edits you make in the Edit tab are sent to everyone automatically.</p></div>';
+      }
+      h += "</div>";
+    } else if (show) {
+      h += '<div class="card"><h3>Share your show live</h3><p class="muted">Publish <strong>' + esc(show.name) + "</strong> so riders, grooms and parents can follow it, and your marshals can update it from the ring.</p>" +
+        '<button class="btn primary" type="button" data-lv="publish">Publish as a live show</button></div>';
+    }
+    h += '<div class="view-head"><h3>Live shows</h3><button class="btn small" type="button" data-lv="refresh">Refresh</button></div>';
+    if (cloudUI.listError) h += '<p class="muted">' + esc(cloudUI.listError) + "</p>";
+    else if (!cloudUI.list) h += '<p class="muted">Loading…</p>';
+    else if (!cloudUI.list.length) h += '<p class="empty">No live shows right now.</p>';
+    else {
+      const today = saNow().date;
+      h += cloudUI.list.map((s) => {
+        const mine = session && s.owner === session.user.id, mar = cloudUI.myMarshal.includes(s.id), cur = isCloud() && show.cloud.id === s.id;
+        const tag = s.show_date === today ? '<span class="badge live">Today</span>' : s.show_date && s.show_date < today ? '<span class="badge">Finished</span>' : s.show_date ? '<span class="badge">' + esc(s.show_date) + "</span>" : "";
+        return '<button type="button" class="show-item' + (cur ? " current" : "") + '" data-open="' + esc(s.id) + '"><span><strong>' + esc(s.name) + "</strong><br><span class=\"muted small\">" + esc(ago(s.live_updated_at)) + (mine ? " · published by you" : mar ? " · you're a marshal" : "") + "</span></span>" + tag + "</button>";
+      }).join("");
+    }
+    box.innerHTML = h;
+  }
+
+  // ---------- Marshal timing screen ----------
+  function marshalClass(list, R) {
+    if (ui.mClass) { const c = list.find((x) => x.id === ui.mClass); if (c) return c; }
+    return list.find((c) => R.cls[c.id].inProgress) || list.find((c) => !R.cls[c.id].finished) || list[list.length - 1];
+  }
+  function renderMarshal() {
+    const box = $("#marshalBody"); if (!box) return;
+    if (!isCloud() || !canEdit()) { box.innerHTML = '<p class="empty">The marshal screen is for arena marshals of a live show. Go to the Live tab to open a show and enter the marshal code.</p>'; return; }
+    if (!ui.arena || !show.arenas.some((a) => a.name === ui.arena)) ui.arena = show.arenas[0] && show.arenas[0].name;
+    const list = show.classes.filter((c) => c.arena === ui.arena);
+    if (!list.length) { box.innerHTML = '<p class="empty">No classes.</p>'; return; }
+    const R = compute(true);
+    const c = marshalClass(list, R); const r = R.cls[c.id];
+    const starters = c.entries.filter((e) => e.status !== "scratched");
+    const nowIdx = c.live.nowId ? starters.findIndex((e) => e.id === c.live.nowId) : -1;
+    const cur = nowIdx >= 0 ? starters[nowIdx] : null, next = starters[nowIdx + 1] || null;
+    const marks = {}; (c.live.marks || []).forEach((m) => (marks[m.id] = m.t));
+    let h = '<div class="arena-tabs">' + show.arenas.map((a) => '<button type="button" data-marena="' + esc(a.name) + '" aria-selected="' + (a.name === ui.arena) + '">' + esc(a.name) + "</button>").join("") + "</div>";
+    h += '<label>Class<select id="mClass">' + list.map((x) => '<option value="' + x.id + '"' + (x.id === c.id ? " selected" : "") + ">Class " + esc(x.no) + (x.height ? " · " + esc(x.height) : "") + " · " + esc(SHORT[x.format]) + (R.cls[x.id].finished ? " (finished)" : R.cls[x.id].inProgress ? " (live)" : "") + "</option>").join("") + "</select></label>";
+    h += '<div class="m-status">' + (c.live.startedAt != null ? "Started " + fmt(c.live.startedAt) : "Not started · est. " + fmt(r.start)) + (c.live.finishedAt != null ? " · Finished " + fmt(c.live.finishedAt) : "") + " · " + starters.length + " starting" +
+      (r.avg ? " · avg " + fmtDur(r.avg.spr) + "/round" : "") + "</div>";
+    h += '<div class="m-now"><div class="m-label">IN THE RING</div>' + (cur ? '<div class="m-who">#' + esc(cur.draw) + " " + esc(cur.rider) + '</div><div class="m-horse">' + esc(cur.horse) + '</div><div class="m-time">went in ' + fmt(c.live.nowAt) + "</div>" : '<div class="m-who muted">Nobody yet</div>') + "</div>";
+    if (c.live.finishedAt == null) {
+      h += next ? '<button type="button" class="m-next" data-m="next"><span>' + (cur ? "▶ NEXT" : "▶ START CLASS") + "</span><small>#" + esc(next.draw) + " " + esc(next.rider) + " – " + esc(next.horse) + "</small></button>"
+        : '<button type="button" class="m-next done" data-m="finish"><span>■ FINISH CLASS</span><small>Last horse is in the ring</small></button>';
+    } else h += '<div class="m-finished">Class finished at ' + fmt(c.live.finishedAt) + ".</div>";
+    h += '<div class="row-btns m-tools">' + (next ? '<button type="button" class="btn" data-m="scratchnext">✕ Scratch #' + esc(next.draw) + "</button>" : "") +
+      '<button type="button" class="btn" data-m="undo"' + (ui.undo && ui.undo.id === c.id ? "" : " disabled") + '>↶ Undo</button>' +
+      (c.live.startedAt == null ? '<button type="button" class="btn" data-m="started">Set start time</button>' : "") +
+      (c.live.finishedAt == null ? '<button type="button" class="btn" data-m="finish">Finish class</button>' : '<button type="button" class="btn" data-m="reopen">Reopen class</button>') + "</div>";
+    h += '<ul class="m-list">' + c.entries.map((e) => {
+      const er = R.ent[e.id] || {}; const scr = e.status === "scratched";
+      const tt = scr ? "scratched" : marks[e.id] != null ? "went " + fmt(marks[e.id]) : er.state === "now" ? "in ring" : "est. " + fmt(er.t);
+      return '<li class="' + (scr ? "scr" : er.state || "") + '"><button type="button" class="m-row" data-m="set" data-ent="' + e.id + '"><b>#' + esc(e.draw) + "</b> " + esc(e.rider) + " <span class=\"muted\">" + esc(e.horse) + "</span><em>" + tt + "</em></button>" +
+        '<button type="button" class="icon-btn" data-m="scratch" data-ent="' + e.id + '" aria-label="' + (scr ? "Un-scratch" : "Scratch") + '">' + (scr ? "↺" : "✕") + "</button></li>";
+    }).join("") + "</ul>";
+    box.innerHTML = h;
+  }
+  async function onMarshalClick(ev) {
+    const ar = ev.target.closest("[data-marena]");
+    if (ar) { ui.arena = ar.dataset.marena; ui.mClass = null; renderMarshal(); return; }
+    const b = ev.target.closest("[data-m]"); if (!b || b.disabled) return;
+    const c = classById(($("#mClass") || {}).value); if (!c) return;
+    const starters = c.entries.filter((e) => e.status !== "scratched");
+    const nowIdx = c.live.nowId ? starters.findIndex((e) => e.id === c.live.nowId) : -1;
+    const ent = b.dataset.ent && c.entries.find((x) => x.id === b.dataset.ent);
+    ui.mClass = c.id;
+    switch (b.dataset.m) {
+      case "next": if (starters[nowIdx + 1]) setNow(c, starters[nowIdx + 1]); break;
+      case "scratchnext": if (starters[nowIdx + 1]) toggleScratch(c, starters[nowIdx + 1]); break;
+      case "scratch": if (ent) toggleScratch(c, ent); break;
+      case "set": if (ent && ent.status !== "scratched") { const r = await dialog("#" + ent.draw + " " + ent.rider, "<p>Mark this rider as in the ring now?</p>", [{ label: "Cancel", value: "no" }, { label: "In the ring now", value: "yes", cls: "primary" }]); if (r.value === "yes") setNow(c, ent); } break;
+      case "undo": doUndo(); break;
+      case "started": { const t = await askTime("Class " + c.no + " started at", saNow().sec); if (t != null) { pushUndo(c, "Class " + c.no + " started " + fmt(t)); c.live.startedAt = t; saveShow(); cloudTouch(c); render(); } break; }
+      case "finish": { const t = await askTime("Class " + c.no + " finished at", saNow().sec); if (t != null) { pushUndo(c, "Class " + c.no + " finished " + fmt(t)); c.live.finishedAt = t; saveShow(); cloudTouch(c); ui.mClass = null; render(); } break; }
+      case "reopen": pushUndo(c, "Class " + c.no + " reopened"); c.live.finishedAt = null; saveShow(); cloudTouch(c); render(); break;
+    }
+  }
+  function bindCloud() {
+    $("#liveBody").addEventListener("click", async (ev) => {
+      const o = ev.target.closest("[data-open]");
+      if (o) { if (isCloud() && show.cloud.id === o.dataset.open) setView("arenas"); else openCloudShow(o.dataset.open); return; }
+      const b = ev.target.closest("[data-lv]"); if (!b) return;
+      switch (b.dataset.lv) {
+        case "publish": publishShow(); break;
+        case "refresh": cloudUI.list = null; renderLive(); loadShowList(); if (isCloud()) pollCloud(true); break;
+        case "marshal": setView("marshal"); break;
+        case "arenas": setView("arenas"); break;
+        case "join": joinMarshal(); break;
+        case "leave": leaveCloud(); break;
+        case "remove": removeShow(); break;
+        case "newcode": newCode(); break;
+        case "showcode": try { cloudUI.code = await rpc("rt_get_code", { p_show: show.cloud.id }); renderLive(); } catch (e) { banner(esc(e.message), "err", [], 6000); } break;
+        case "sendcode": try { cloudUI.code = cloudUI.code || await rpc("rt_get_code", { p_show: show.cloud.id }); renderLive(); showCodeDialog(cloudUI.code); } catch (e) { banner(esc(e.message), "err", [], 6000); } break;
+        case "sharelink": {
+          const t = "Follow *" + show.name + "* live on Ringside Timer – estimated jump times for every rider: " + shareLink();
+          window.open("https://wa.me/?text=" + encodeURIComponent(t), "_blank", "noopener"); break;
+        }
+      }
+    });
+    $("#marshalBody").addEventListener("click", onMarshalClick);
+    $("#marshalBody").addEventListener("change", (ev) => { if (ev.target.id === "mClass") { ui.mClass = ev.target.value; renderMarshal(); } });
+    window.addEventListener("online", () => { flushPending(); pollCloud(true); });
+    document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") { pollCloud(false); flushPending(); } });
+  }
+
+  // ===================================================================
   // Banner, busy, dialogs
   // ===================================================================
   let bannerTimer = null;
@@ -916,7 +1303,7 @@
       $("#dlgBtns").innerHTML = buttons.map((b) => '<button class="btn ' + (b.cls || "") + '" value="' + esc(b.value) + '">' + esc(b.label) + "</button>").join("");
       const onClose = () => {
         dlg.removeEventListener("close", onClose);
-        const vals = {}; $$("input,select", $("#dlgBody")).forEach((i) => (vals[i.name] = i.value));
+        const vals = {}; $$("input,select", $("#dlgBody")).forEach((i) => (vals[i.name] = i.type === "checkbox" ? (i.checked ? i.value || "on" : "") : i.value));
         resolve({ value: dlg.returnValue, vals });
       };
       dlg.returnValue = "";
@@ -933,8 +1320,10 @@
   async function entryMenu(c, e) {
     const isStarR = stars.riders.includes(norm(e.rider)), isStarH = stars.horses.includes(norm(e.horse));
     const opts = [];
-    if (e.status !== "scratched") opts.push({ label: "▶ Now jumping", value: "now", cls: "primary opt" });
-    opts.push({ label: e.status === "scratched" ? "Un-scratch" : "✕ Scratch (not starting)", value: "scratch", cls: "opt" + (e.status === "scratched" ? "" : " danger") });
+    if (canEdit()) {
+      if (e.status !== "scratched") opts.push({ label: "▶ Now jumping", value: "now", cls: "primary opt" });
+      opts.push({ label: e.status === "scratched" ? "Un-scratch" : "✕ Scratch (not starting)", value: "scratch", cls: "opt" + (e.status === "scratched" ? "" : " danger") });
+    }
     if (e.rider) opts.push({ label: (isStarR ? "Unstar rider " : "★ Star rider ") + e.rider, value: "sr", cls: "opt" });
     if (e.horse) opts.push({ label: (isStarH ? "Unstar horse " : "★ Star horse ") + e.horse, value: "sh", cls: "opt" });
     opts.push({ label: "Cancel", value: "cancel", cls: "opt" });
@@ -956,12 +1345,15 @@
   function setView(v) {
     if (!session) v = "auth";
     else if (v === "auth") v = ui.authMode === "newpw" ? "auth" : show ? "arenas" : "load";
-    if (session && !show && v !== "load" && v !== "auth") v = "load";
+    if (session && !show && v !== "load" && v !== "auth" && v !== "live") v = "load";
+    if (v === "marshal" && !(isCloud() && canEdit())) v = "live";
     ui.view = v;
     if (v === "auth" && !ui.authMode) authMode("signin");
     $$(".view").forEach((s) => (s.hidden = s.id !== "view-" + v));
     $$("#tabbar button").forEach((b) => b.setAttribute("aria-current", b.dataset.view === v ? "page" : "false"));
     $("#tabbar").hidden = !show || v === "auth";
+    $('#tabbar [data-view="review"]').hidden = isCloud() && role() !== "owner";
+    if (v === "live" && !cloudUI.list) loadShowList();
     $(".foot").hidden = v === "auth";
     render();
     window.scrollTo(0, 0);
@@ -969,13 +1361,16 @@
   function render() {
     tickClock();
     if (ui.view === "auth") { $("#showName").textContent = "Sign in to continue"; return; }
-    $("#showName").textContent = show ? show.name + (show.date ? " · " + show.date : "") : "No show loaded";
-    if (!show) { renderLoad(); return; }
+    $("#showName").textContent = show ? (isCloud() ? "● " : "") + show.name + (show.date ? " · " + show.date : "") : "No show loaded";
+    if (!show) { if (ui.view === "live") renderLive(); else renderLoad(); renderLiveStrip(); return; }
     if (ui.view === "arenas") renderArenas();
     else if (ui.view === "mine") renderMine();
     else if (ui.view === "review") renderReview();
     else if (ui.view === "settings") renderSettings();
     else if (ui.view === "load") renderLoad();
+    else if (ui.view === "live") renderLive();
+    else if (ui.view === "marshal") renderMarshal();
+    renderLiveStrip();
   }
   function tickClock() { $("#clock").textContent = fmt(saNow().sec); }
 
@@ -1049,7 +1444,7 @@
       html += '<div class="badges">' + badges.join("") + "</div></summary>";
       // live bar
       const sprInfo = r.avg ? "Using real average " + fmtDur(r.avg.spr) + " per round (from " + r.avg.n + " rounds)" : "Using default " + fmtDur(r.sprDefault) + " per round" + (r.startSrc === "actual" ? " · started " + fmt(c.live.startedAt) : "");
-      html += '<div class="live-bar"><div class="now-in"><label>Now jumping #<input type="text" inputmode="numeric" enterkeyhint="go" data-now="' + c.id + '" placeholder="draw"></label><button type="button" class="btn small primary" data-act="go" data-cls="' + c.id + '">Go</button><button type="button" class="btn small" data-act="next" data-cls="' + c.id + '">Next ▸</button></div>' +
+      if (canEdit()) html += '<div class="live-bar"><div class="now-in"><label>Now jumping #<input type="text" inputmode="numeric" enterkeyhint="go" data-now="' + c.id + '" placeholder="draw"></label><button type="button" class="btn small primary" data-act="go" data-cls="' + c.id + '">Go</button><button type="button" class="btn small" data-act="next" data-cls="' + c.id + '">Next ▸</button></div>' +
         '<button type="button" class="btn small" data-act="started" data-cls="' + c.id + '">Started</button><button type="button" class="btn small" data-act="finished" data-cls="' + c.id + '">Finished</button>' +
         '<div class="info">' + sprInfo + (hasLive(c) ? ' · <button type="button" class="btn small" data-act="resetlive" data-cls="' + c.id + '">Clear live</button>' : "") + "</div></div>";
       html += '<ul class="entries">';
@@ -1058,7 +1453,7 @@
         const cls = ["entry", er.state || ""];
         if (clashes.ids.has(e.id)) cls.push("clash");
         if (stars.riders.includes(norm(e.rider)) || stars.horses.includes(norm(e.horse))) cls.push("starred");
-        const cd = er.state === "scratched" ? "" : countdown(er.t, er.state);
+        const cd = er.state === "scratched" ? "" : er.actual && er.state === "done" ? "went in" : countdown(er.t, er.state);
         html += '<li class="' + cls.join(" ") + '" data-cls="' + c.id + '" data-ent="' + e.id + '"><span class="draw">' + esc(e.draw || "–") + '</span><span class="who"><div class="rider">' + esc(e.rider || "?") + '</div><div class="horse">' + esc(e.horse || "") + "</div></span>" +
           '<span class="t">' + (er.state === "scratched" ? "scratched" : fmt(er.t)) + (cd ? "<small>" + cd + "</small>" : "") + "</span></li>";
       });
@@ -1152,6 +1547,8 @@
       '<p class="muted small">Leave blank for no lunch break. The break is taken after the class that is running when lunch time arrives.</p>';
     $("#btnShare").hidden = !(navigator.canShare && window.File);
     $("#acctEmail").textContent = (session && session.user && session.user.email) || "";
+    const cn = $("#cloudNote"); cn.hidden = !(isCloud() && role() !== "owner");
+    cn.textContent = "For this live show, estimated times use the publisher's timing settings so everyone sees the same times. Changes here only apply to your own shows.";
   }
 
   // ===================================================================
@@ -1257,9 +1654,9 @@
         const a = act.dataset.act;
         if (a === "go") nowByDraw(c, $('input[data-now="' + c.id + '"]').value);
         else if (a === "next") nextHorse(c);
-        else if (a === "started") { const t = await askTime("Class " + c.no + " started at", saNow().sec); if (t != null) { pushUndo(c, "Class " + c.no + " started " + fmt(t)); c.live.startedAt = t; c.live.finishedAt = null; ui.open[c.id] = true; saveShow(); render(); } }
-        else if (a === "finished") { const t = await askTime("Class " + c.no + " finished at", saNow().sec); if (t != null) { pushUndo(c, "Class " + c.no + " finished " + fmt(t)); c.live.finishedAt = t; ui.open[c.id] = false; saveShow(); render(); } }
-        else if (a === "resetlive") { pushUndo(c, "Live updates cleared for Class " + c.no); c.live = blankLive(); c.entries.forEach((e) => { if (e.status === "done") e.status = "starting"; }); saveShow(); render(); }
+        else if (a === "started") { const t = await askTime("Class " + c.no + " started at", saNow().sec); if (t != null) { pushUndo(c, "Class " + c.no + " started " + fmt(t)); c.live.startedAt = t; c.live.finishedAt = null; ui.open[c.id] = true; saveShow(); cloudTouch(c); render(); } }
+        else if (a === "finished") { const t = await askTime("Class " + c.no + " finished at", saNow().sec); if (t != null) { pushUndo(c, "Class " + c.no + " finished " + fmt(t)); c.live.finishedAt = t; ui.open[c.id] = false; saveShow(); cloudTouch(c); render(); } }
+        else if (a === "resetlive") { pushUndo(c, "Live updates cleared for Class " + c.no); c.live = blankLive(); c.entries.forEach((e) => { if (e.status === "done") e.status = "starting"; }); saveShow(); cloudTouch(c); render(); }
         return;
       }
       const li = ev.target.closest(".entry");
@@ -1279,8 +1676,8 @@
     });
 
     // Review edits (saved as you type; structure changes re-render)
-    $("#inShowName").addEventListener("input", (ev) => { show.name = ev.target.value; saveShow(); $("#showName").textContent = show.name; });
-    $("#inShowDate").addEventListener("change", (ev) => { show.date = ev.target.value; saveShow(); render(); });
+    $("#inShowName").addEventListener("input", (ev) => { show.name = ev.target.value; saveShow(); cloudScheduleChanged(); $("#showName").textContent = show.name; });
+    $("#inShowDate").addEventListener("change", (ev) => { show.date = ev.target.value; saveShow(); cloudScheduleChanged(); render(); });
     const rv = $("#reviewList");
     rv.addEventListener("input", onReviewEdit);
     rv.addEventListener("change", onReviewEdit);
@@ -1303,13 +1700,13 @@
           c.entries.push(makeEntry({ draw: String(maxDraw + 1) })); break;
         }
       }
-      syncArenas(show); saveShow(); renderReview();
+      syncArenas(show); saveShow(); cloudScheduleChanged(); renderReview();
       if (b.dataset.rv === "eadd") { const rows = $$('[data-cls="' + c.id + '"] .rv-entry[data-ent] input[data-e="rider"]'); const last = rows[rows.length - 1]; if (last) last.focus(); }
     });
     $("#btnAddClass").onclick = () => {
       const last = show.classes[show.classes.length - 1];
       show.classes.push(makeClass({ arena: last ? last.arena : "Arena 1", no: String((parseInt(last && last.no, 10) || 0) + 1), start: last ? "follow" : S.dayStart }));
-      syncArenas(show); saveShow(); renderReview();
+      syncArenas(show); saveShow(); cloudScheduleChanged(); renderReview();
     };
 
     // Settings
@@ -1319,11 +1716,11 @@
         const k = i.dataset.set;
         if (typeof DEFAULTS[k] === "number") { const v = parseFloat(i.value); S[k] = isFinite(v) && v >= 0 ? v : DEFAULTS[k]; }
         else S[k] = i.value || DEFAULTS[k];
-        saveSettings(); if (k === "theme") applyTheme();
+        saveSettings(); if (k === "theme") applyTheme(); else cloudScheduleChanged();
       } else if (i.dataset.lunch != null) {
         const a = show.arenas[+i.dataset.lunch];
         if (i.dataset.k === "lunchMin") a.lunchMin = Math.max(0, parseInt(i.value, 10) || 0); else a.lunchStart = i.value;
-        saveShow();
+        saveShow(); cloudScheduleChanged();
       }
     });
     $("#btnExportCsv").onclick = () => download(fileSafe(show.name) + ".csv", showToCSV(true), "text/csv");
@@ -1339,11 +1736,11 @@
     $("#btnClearLive").onclick = async () => {
       const r = await dialog("Clear all live updates?", "<p>This removes every “now jumping”, started and finished time for this show. Scratches stay.</p>", [{ label: "Cancel", value: "no" }, { label: "Clear", value: "yes", cls: "danger" }]);
       if (r.value !== "yes") return;
-      show.classes.forEach((c) => (c.live = blankLive())); saveShow(); banner("Live updates cleared.", "ok", [], 4000);
+      show.classes.forEach((c) => { c.live = blankLive(); cloudTouch(c); }); saveShow(); banner("Live updates cleared.", "ok", [], 4000);
     };
     $("#btnNewShow").onclick = async () => {
       const r = await dialog("Load a different show?", "<p>Your current show stays saved until you load a new one. Tip: download a backup first.</p>", [{ label: "Cancel", value: "no" }, { label: "Continue", value: "yes", cls: "primary" }]);
-      if (r.value === "yes") { $("#docChoice").hidden = true; ui.view = "load"; $$(".view").forEach((s) => (s.hidden = s.id !== "view-load")); $("#tabbar").hidden = true; renderLoad(); }
+      if (r.value === "yes") { if (isCloud()) { clearInterval(cloudUI.pollTimer); store(ukey("active"), "local"); show = null; } $("#docChoice").hidden = true; ui.view = "load"; $$(".view").forEach((s) => (s.hidden = s.id !== "view-load")); $("#tabbar").hidden = true; renderLoad(); }
     };
   }
   function confirmDel(c) { return window.confirm ? window.confirm("Delete Class " + (c.no || "") + " and its " + c.entries.length + " entries?") : true; }
@@ -1365,7 +1762,7 @@
       e[i.dataset.e] = i.value;
       if (i.dataset.e !== "status" && e.flags.length && ev.type === "change") { e.flags = []; row.classList.remove("flagged"); }
     }
-    saveShow();
+    saveShow(); cloudScheduleChanged();
   }
 
   // ===================================================================
@@ -1375,12 +1772,21 @@
     applyTheme();
     bind();
     bindAuth();
+    bindCloud();
+    $("#liveStrip").addEventListener("click", () => setView("live"));
+    $("#btnFollowLive").onclick = () => setView("live");
+    const qs = new URLSearchParams(location.search);
+    if (qs.get("show")) { ui.deepShow = qs.get("show"); history.replaceState(null, "", location.pathname + location.hash); }
     tickClock();
     const redirect = readAuthRedirect();
     if (session) loadUserData();
     if (redirect && redirect.error) { setView("auth"); authMode("signin"); authMsg("That link didn't work: " + redirect.error + ". Links expire after a while — please try again.", "err"); }
     else if (redirect && redirect.type === "recovery") { authMode("newpw"); setView("auth"); authMsg("Please choose a new password.", "ok"); }
-    else if (session) { setView(show ? "arenas" : "load"); if (redirect) banner("Your email is confirmed — welcome!", "ok", [], 6000); }
+    else if (session) {
+      setView(show ? "arenas" : "load"); if (redirect) banner("Your email is confirmed — welcome!", "ok", [], 6000);
+      if (ui.deepShow) { openCloudShow(ui.deepShow); ui.deepShow = null; }
+      else if (isCloud()) { startPolling(); pollCloud(true); flushPending(); }
+    }
     else { setView("auth"); authMode("signin"); }
     if (session && navigator.onLine !== false) {
       freshToken().then(() => (session ? loadUser() : null)).then(() => { if (!session && ui.view !== "auth") { setView("auth"); authMode("signin"); authMsg("Please sign in again.", "err"); } });
@@ -1389,7 +1795,7 @@
       tickClock();
       const typing = document.activeElement && /INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName);
       const dlgOpen = $("#dlg").open;
-      if (!typing && !dlgOpen && (ui.view === "arenas" || ui.view === "mine")) render();
+      if (!typing && !dlgOpen && (ui.view === "arenas" || ui.view === "mine" || ui.view === "marshal")) render(); else renderLiveStrip();
       if (session && session.expires_at - 300 < Date.now() / 1000) freshToken();
     }, 20000);
     if ("serviceWorker" in navigator && /^https?:/.test(location.protocol)) {
@@ -1397,6 +1803,6 @@
     }
   }
   // expose a tiny hook for automated tests (no secrets here)
-  window.RingsideTimer = { compute: () => compute(true), baseline: () => compute(false), get show() { return show; }, planText, csvToShow, linesToShow, normTime, render, setNow, nowByDraw, toggleScratch };
+  window.RingsideTimer = { compute: () => compute(true), baseline: () => compute(false), get show() { return show; }, planText, cloud: () => ({ pending, role: role(), id: show && show.cloud && show.cloud.id }), poll: () => pollCloud(true), csvToShow, linesToShow, normTime, render, setNow, nowByDraw, toggleScratch };
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init); else init();
 })();

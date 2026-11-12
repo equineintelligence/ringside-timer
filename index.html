@@ -24,6 +24,7 @@
   </header>
   <p class="disclaimer">Estimates only. The ring steward and show office have the final say.</p>
 
+  <button type="button" id="liveStrip" class="live-strip" hidden></button>
   <div id="banner" class="banner" hidden></div>
 
   <main id="main">
@@ -77,7 +78,7 @@
         <div class="card privacy small">
           <h3>Privacy</h3>
           <p>To sign in, we store your email address and a securely scrambled (hashed) version of your password with our service provider, Supabase. We use your email only to let you sign in and reset your password; we don't share or sell it.</p>
-          <p>Your shows and starred riders are saved only on your own phone. If you use "Read schedule with AI", the file is sent to an AI service (outside South Africa) to be processed and is not stored.</p>
+          <p>Your own shows and starred riders are saved only on your own phone. Live shows that organisers publish (with riders' and horses' names) are stored online so everyone can follow them, and are deleted automatically 7 days after the show. If you use "Read schedule with AI", the file is sent to an AI service (outside South Africa) to be processed and is not stored.</p>
           <p id="contactLine" hidden>To see, correct or delete your account details, contact <a id="contactLink" href="#"></a>.</p>
         </div>
       </div>
@@ -110,6 +111,11 @@
       <div class="card">
         <h3>3. Just trying it out?</h3>
         <button class="btn" id="btnSample" type="button">Load the sample show</button>
+      </div>
+      <div class="card live-card">
+        <h3>Follow a live show</h3>
+        <p class="muted">See shows published by organisers, with times updated by the arena marshals.</p>
+        <button class="btn primary" id="btnFollowLive" type="button">Browse live shows</button>
       </div>
       <div class="card" id="resumeCard" hidden>
         <h3>Saved show</h3>
@@ -158,6 +164,19 @@
       <div id="searchResults"></div>
       <div id="clashList"></div>
       <div id="mineList"></div>
+    </section>
+
+    <!-- LIVE SHOWS -->
+    <section id="view-live" class="view" hidden>
+      <h2>Live shows</h2>
+      <div id="liveBody"></div>
+    </section>
+
+    <!-- MARSHAL TIMING SCREEN -->
+    <section id="view-marshal" class="view" hidden>
+      <div class="view-head"><h2>Marshal timing</h2><button class="btn small" type="button" data-view-jump="live" onclick="document.querySelector('[data-view=live]').click()">Done</button></div>
+      <p class="muted small">Tap <strong>NEXT</strong> the moment each horse enters the ring. Everyone following the show sees it within about 15 seconds. Works without signal: updates send when you're back online.</p>
+      <div id="marshalBody"></div>
     </section>
 
     <!-- SETTINGS -->
@@ -231,7 +250,8 @@
       </div>
       <div class="card privacy">
         <h3>Privacy</h3>
-        <p class="small">Your account stores only your email address and a hashed password. Your show is saved only on this phone, separately for each account. If you use "Read schedule with AI", the file is sent to an AI service (outside South Africa) to be processed and is not stored; we keep only an anonymous count of AI reads to prevent abuse. The free on-phone reader never sends your file anywhere.</p>
+        <p class="small" id="cloudNote" hidden></p>
+        <p class="small">Your account stores only your email address and a hashed password. Your own show is saved only on this phone, separately for each account. Live shows you publish are stored online (with riders' and horses' names) and deleted automatically 7 days after the show date; only you and your marshals can change them. If you use "Read schedule with AI", the file is sent to an AI service (outside South Africa) to be processed and is not stored; we keep only an anonymous count of AI reads to prevent abuse. The free on-phone reader never sends your file anywhere.</p>
       </div>
     </section>
   </main>
@@ -239,6 +259,7 @@
   <nav class="tabbar" id="tabbar" aria-label="Main">
     <button data-view="arenas" type="button"><span class="ico">◎</span>Arenas</button>
     <button data-view="mine" type="button"><span class="ico">★</span>My riders</button>
+    <button data-view="live" type="button"><span class="ico">●</span>Live</button>
     <button data-view="review" type="button"><span class="ico">✎</span>Edit</button>
     <button data-view="settings" type="button"><span class="ico">⚙</span>Settings</button>
   </nav>

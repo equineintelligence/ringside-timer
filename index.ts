@@ -94,7 +94,8 @@ function startOfSaDayIso(): string {
 }
 
 const SYSTEM_PROMPT = `You read South African showjumping show schedules and running orders and convert them to JSON.
-Return ONLY a JSON object, no other text, no markdown fences. Use exactly this shape:
+Return ONLY minified JSON on one line (no spaces or line breaks between items), no other text, no markdown fences.
+Shape (shown spaced out here only for readability):
 {
   "show_name": string,
   "show_date": "YYYY-MM-DD" or "",
@@ -106,9 +107,10 @@ Return ONLY a JSON object, no other text, no markdown fences. Use exactly this s
       "height": string,             // e.g. "1.10m" ("" if not given)
       "format": one of ${JSON.stringify(FORMATS)},
       "start_time": "HH:MM" (24-hour) or "follow" or "",
-      "same_course": boolean,       // true only if the schedule says the same course is used with the height raised
-      "entries": [ { "draw": string, "rider": string, "horse": string, "status": "starting" | "scratched" | "done" } ],
-      "uncertain": [string]         // short notes about anything you had to guess for this class
+      "same_course": true,          // include ONLY if the schedule says the same course is used with the height raised
+      "entries": [ [draw, rider, horse] ],   // one compact array per entry, all strings, e.g. ["4","Anna Botha","Silver Moon"]
+                                             // add a 4th item "S" if scratched/withdrawn, or "D" if already jumped
+      "uncertain": [string]         // include ONLY if you had to guess something: short notes for this class
     }
   ]
 }
@@ -119,7 +121,7 @@ Rules:
   two-phase / Art 274.5 -> "Two-phase"; jump-off / Art 238.2.2 / immediate jump-off -> "Jump-off (Table A with jump-off)";
   two rounds / Art 273 -> "Two rounds"; accumulator / Art 269 -> "Accumulator"; anything else -> "Other".
 - Entries: keep the running order (draw) order. Rider is the person, horse is the animal. If a running order is not given for a class, use an empty list.
-- Mark entries shown as withdrawn/scratched/W/D as "scratched".
+- Mark entries shown as withdrawn/scratched/W/D with "S" as the 4th item.
 - Never invent riders, horses or times. If something is unclear, make your best reading and add a note to "uncertain".`;
 
 type AnyObj = Record<string, unknown>;
@@ -143,8 +145,14 @@ function validate(d: unknown): { ok: true; value: AnyObj } | { ok: false; error:
     if (c.entries != null && !Array.isArray(c.entries)) return { ok: false, error: `classes[${i}].entries must be an array` };
     const entries = [];
     for (const [j, er] of ((c.entries as unknown[]) ?? []).entries()) {
-      if (!er || typeof er !== "object") return { ok: false, error: `classes[${i}].entries[${j}] must be an object` };
-      const e = er as AnyObj;
+      // Compact form: ["4","Anna Botha","Silver Moon"] (+ "S" scratched / "D" done). Full objects are accepted too.
+      let e: AnyObj;
+      if (Array.isArray(er)) {
+        if (er.length < 3) return { ok: false, error: `classes[${i}].entries[${j}] must be [draw, rider, horse]` };
+        const flag = String(er[3] ?? "").toUpperCase();
+        e = { draw: er[0], rider: er[1], horse: er[2], status: flag.startsWith("S") ? "scratched" : flag.startsWith("D") ? "done" : "starting" };
+      } else if (er && typeof er === "object") e = er as AnyObj;
+      else return { ok: false, error: `classes[${i}].entries[${j}] must be [draw, rider, horse]` };
       const status = ["starting", "scratched", "done"].includes(String(e.status)) ? String(e.status) : "starting";
       entries.push({
         draw: String(e.draw ?? "").slice(0, 10),
@@ -182,7 +190,9 @@ function extractJson(text: string): unknown {
   return JSON.parse(t);
 }
 
-async function callClaude(apiKey: string, content: unknown[], messages: unknown[] = []): Promise<{ text: string; stop: string }> {
+type ClaudeResult = { text: string; stop: string; inTok: number; outTok: number };
+
+async function callClaude(apiKey: string, messages: unknown[]): Promise<ClaudeResult> {
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: {
@@ -194,7 +204,7 @@ async function callClaude(apiKey: string, content: unknown[], messages: unknown[
       model: MODEL,
       max_tokens: MAX_OUTPUT_TOKENS,
       system: SYSTEM_PROMPT,
-      messages: [{ role: "user", content }, ...messages],
+      messages,
     }),
   });
   if (!res.ok) {
@@ -204,7 +214,9 @@ async function callClaude(apiKey: string, content: unknown[], messages: unknown[
   }
   const data = await res.json();
   const text = (data.content ?? []).filter((b: AnyObj) => b.type === "text").map((b: AnyObj) => b.text).join("");
-  return { text, stop: String(data.stop_reason ?? "") };
+  const u = data.usage ?? {};
+  const inTok = (u.input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0);
+  return { text, stop: String(data.stop_reason ?? ""), inTok, outTok: u.output_tokens ?? 0 };
 }
 
 Deno.serve(async (req: Request) => {
@@ -276,30 +288,47 @@ Deno.serve(async (req: Request) => {
   const rowId = ins.data?.id;
 
   // ---- Ask Claude, check the answer, retry once ----
+  // Token counts (numbers only, never content) are saved so you can see real costs per read.
   let lastError = "";
+  let inTok = 0, outTok = 0, attempts = 0;
+  const logUsage = async (success: boolean) => {
+    if (rowId) await db.from("parse_requests").update({ success, input_tokens: inTok, output_tokens: outTok, attempts }).eq("id", rowId);
+  };
+  const ask = async (messages: unknown[]) => {
+    const r = await callClaude(apiKey, messages);
+    inTok += r.inTok; outTok += r.outTok; attempts++;
+    return r;
+  };
   try {
-    let first = await callClaude(apiKey, content);
+    let answer = await ask([{ role: "user", content }]);
     for (let attempt = 1; attempt <= 2; attempt++) {
-      if (first.stop === "max_tokens") { lastError = "The schedule is too long to read in one go. Try splitting it (e.g. one arena per file)."; break; }
+      if (answer.stop === "max_tokens") { lastError = "The schedule is too long to read in one go. Try splitting it (e.g. one arena per file)."; break; }
       let parsed: unknown = null;
-      try { parsed = extractJson(first.text); } catch { lastError = "The answer was not valid JSON."; }
+      try { parsed = extractJson(answer.text); } catch { lastError = "The answer was not valid JSON."; }
       if (parsed) {
         const v = validate(parsed);
         if (v.ok) {
-          if (rowId) await db.from("parse_requests").update({ success: true }).eq("id", rowId);
+          await logUsage(true);
           return reply(origin, 200, { ok: true, model: MODEL, show: v.value });
         }
         lastError = v.error;
       }
       if (attempt === 2) break;
-      // Retry once, telling Claude what was wrong.
-      first = await callClaude(apiKey, content, [
-        { role: "assistant", content: first.text.slice(0, 50000) || "{}" },
-        { role: "user", content: `That response could not be used: ${lastError}. Reply again with ONLY the corrected JSON object in the required shape.` },
-      ]);
+      if (answer.text.includes("{") && answer.text.length > 20) {
+        // Cheap retry: Claude already read the schedule, so send back only its answer and the problem
+        // (not the whole PDF again) and ask for a corrected version.
+        answer = await ask([{ role: "user", content: [{ type: "text", text:
+          `The JSON below was produced from a showjumping schedule but could not be used: ${lastError}.\n` +
+          "Fix it and return ONLY the corrected minified JSON in exactly the same shape. Keep every class and entry; do not add or drop data.\n\n<json>\n" +
+          answer.text.slice(0, 60000) + "\n</json>" }] }]);
+      } else {
+        // No usable answer at all: read the schedule again.
+        answer = await ask([{ role: "user", content }]);
+      }
     }
   } catch (e) {
     lastError = (e as Error).message;
   }
+  await logUsage(false).catch(() => {});
   return reply(origin, 422, { ok: false, code: "parse_failed", error: `The AI couldn't produce a usable result (${lastError}). Please try the built-in reader or the CSV template.` });
 });
