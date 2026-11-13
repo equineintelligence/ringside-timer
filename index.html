@@ -86,24 +86,21 @@
 
     <!-- LOAD -->
     <section id="view-load" class="view" hidden>
-      <h2>Your shows</h2>
-      <div class="card" id="libCard" hidden>
-        <h3>My saved shows</h3>
-        <p class="muted small" id="libStatus"></p>
-        <div id="libList"></div>
+      <div class="view-head">
+        <h2>My shows</h2>
+        <button class="btn primary" id="btnNewShowTop" type="button">+ New show</button>
       </div>
-      <h2>Load a new show</h2>
-      <div class="card">
-        <h3>1. Spreadsheet (CSV)</h3>
-        <p class="muted">Most reliable. Fill in the template, one row per horse.</p>
-        <div class="row-btns">
-          <label class="btn primary file-btn">Choose CSV or backup file<input type="file" id="fileCsv" accept=".csv,.json,text/csv,application/json"></label>
-          <button class="btn" id="btnTemplate" type="button">Download blank template</button>
+      <p class="muted small" id="libStatus"></p>
+      <div id="libList"></div>
+      <p class="empty" id="libEmpty" hidden>No shows yet. Start your first one below.</p>
+
+      <div class="card new-show" id="newShowCard">
+        <div class="view-head">
+          <h3 id="uploadTitle">Start a new show</h3>
+          <button class="btn small" id="btnCancelAdd" type="button" hidden>Cancel</button>
         </div>
-      </div>
-      <div class="card">
-        <h3>2. Show schedule (PDF or Excel)</h3>
-        <p class="muted">We'll read it and show you the result to check. You can pick several files at once (for example the timetable plus starting lists), or add starting lists to your show later.</p>
+        <p class="muted small" id="uploadHint">Upload the schedule. You can pick several files at once, for example the timetable plus starting lists. Starting lists published later can be added to the show from its card above.</p>
+        <h4>Show schedule or starting list (PDF or Excel)</h4>
         <label class="btn primary file-btn">Choose PDF or Excel<input type="file" id="fileDoc" accept=".pdf,.xlsx,.xls,.ods,application/pdf" multiple></label>
         <div id="docChoice" class="doc-choice" hidden>
           <p><strong id="docName"></strong></p>
@@ -111,13 +108,22 @@
             <button class="btn primary" id="btnReadLocal" type="button">Read on this phone (free)</button>
             <button class="btn ai" id="btnReadAI" type="button" hidden>Read schedule with AI</button>
           </div>
-          <p class="muted small" id="aiPrivacy" hidden>AI reading sends this file to an AI service (outside South Africa) to be processed. It is not stored. Limited to a few reads per day.</p>
+          <p class="muted small" id="aiPrivacy" hidden>AI reading sends the file to an AI service (outside South Africa) to be processed. It is not stored. Limited to a few reads per day.</p>
+        </div>
+        <h4>Spreadsheet (CSV)</h4>
+        <div class="row-btns">
+          <label class="btn file-btn">Choose CSV or backup file<input type="file" id="fileCsv" accept=".csv,.json,text/csv,application/json"></label>
+          <button class="btn small" id="btnTemplate" type="button">Download blank template</button>
+        </div>
+        <div id="newOnly">
+          <h4>Other ways</h4>
+          <div class="row-btns">
+            <button class="btn" id="btnEmptyShow" type="button">Start an empty show (type it in)</button>
+            <button class="btn" id="btnSample" type="button">Try the sample show</button>
+          </div>
         </div>
       </div>
-      <div class="card">
-        <h3>3. Just trying it out?</h3>
-        <button class="btn" id="btnSample" type="button">Load the sample show</button>
-      </div>
+
       <div class="card live-card">
         <h3>Follow a live show</h3>
         <p class="muted">See shows published by organisers, with times updated by the arena marshals.</p>
@@ -146,6 +152,7 @@
 
     <!-- ARENAS -->
     <section id="view-arenas" class="view" hidden>
+      <div class="arena-head"><strong id="arenaShowName"></strong><span class="row-btns"><button class="btn small" id="btnEditSched" type="button">✎ Edit schedule</button><button class="btn small" type="button" onclick="document.querySelector('[data-view=load]').click()">My shows</button></span></div>
       <div class="arena-tabs" id="arenaTabs" role="tablist"></div>
       <div id="arenaSummary" class="summary"></div>
       <div id="arenaClasses"></div>
@@ -154,6 +161,11 @@
     <!-- MY RIDERS -->
     <section id="view-mine" class="view" hidden>
       <h2>My riders</h2>
+      <p class="muted small" id="mineFor"></p>
+      <div class="row-btns" id="mineTools">
+        <button class="btn small" id="btnCopyRiders" type="button">Copy riders from another show</button>
+        <button class="btn small danger" id="btnClearRiders" type="button">Clear this list</button>
+      </div>
       <div class="plan-btns" id="planBtns">
         <button class="btn primary" id="btnPlanPrint" type="button">Show plan: Print / PDF</button>
         <button class="btn wa" id="btnPlanWA" type="button">Send plan on WhatsApp</button>
@@ -246,7 +258,7 @@
         <div class="row-btns">
           <button class="btn" id="btnResetSettings" type="button">Reset settings</button>
           <button class="btn" id="btnClearLive" type="button">Clear all live updates</button>
-          <button class="btn" id="btnNewShow" type="button">Load another show</button>
+          <button class="btn" id="btnNewShow" type="button">Go to my shows</button>
         </div>
       </div>
       <div class="card">
@@ -267,10 +279,10 @@
   </main>
 
   <nav class="tabbar" id="tabbar" aria-label="Main">
+    <button data-view="load" type="button"><span class="ico">▤</span>Shows</button>
     <button data-view="arenas" type="button"><span class="ico">◎</span>Arenas</button>
     <button data-view="mine" type="button"><span class="ico">★</span>My riders</button>
     <button data-view="live" type="button"><span class="ico">●</span>Live</button>
-    <button data-view="review" type="button"><span class="ico">✎</span>Edit</button>
     <button data-view="settings" type="button"><span class="ico">⚙</span>Settings</button>
   </nav>
 

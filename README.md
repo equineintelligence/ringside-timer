@@ -15,6 +15,7 @@ Live site (once set up): **https://equineintelligence.github.io/ringside-timer**
 ## What it does
 
 - **Sign in to use it.** Everyone creates a free account (email + password) and signs in. Accounts are handled by Supabase Auth. Once signed in on a phone, it keeps working offline at the ring.
+- **Shows tab**: keep as many shows as you like. Tap **+ New show** to upload a schedule, open any saved show, add starting lists to it later, and delete it when you're done.
 - **Load a show** three ways:
   1. **CSV spreadsheet** in the template format (most reliable).
   2. **PDF or Excel schedule** read on the phone itself (free, always available).
@@ -23,13 +24,13 @@ Live site (once set up): **https://equineintelligence.github.io/ringside-timer**
 - **Estimated times** for every entry, every class start/finish, lunch breaks and jump-offs.
 - **Live mode** on show day: "Now jumping #__", **Next ▸**, "Started", "Finished", one-tap scratches, and **Undo**. After a few real rounds it switches to the class's real average time per round and says so.
 - **Running X min behind/ahead** per arena.
-- **My riders**: star riders or horses and see only their rounds, in time order, with a countdown ("in ~42 min").
+- **My riders**: each show has its own rider list. Star riders or horses and see only their rounds, in time order, with a countdown ("in ~42 min"). **Copy riders from another show** reuses a list you made before.
 - **Live shows**: an approved organiser publishes a show; every signed-in user can follow it from the **Live** tab (or a shared link), and the times update automatically about every 15 seconds.
 - **Marshal timing screen**: arena marshals enter a private marshal code, then tap one big **NEXT** button each time a horse enters the ring. It records the actual time each rider went in, scratchings, and class start/finish. It keeps working without signal and sends updates when the phone is back online.
 - **Show plan** for your starred riders and horses: every round with estimated time, arena, class, height, format and draw, as a branded **Print / PDF** page or a ready-made **WhatsApp** message (or copy the text).
 - **Clash warning** when the same rider has two rounds less than 10 minutes apart (in any arena).
 - **Export / share**: download the show as CSV, or as a JSON backup that can be loaded again.
-- **My saved shows**: every schedule a user loads is kept in their account (with a copy on the phone for offline use) until they delete it, together with their starred riders and horses. Sign in on another phone or computer and it's all there. Delete one show with the bin icon on the Load screen, or everything under **Settings → Delete all my data**.
+- **My saved shows**: every schedule a user loads is kept in their account (with a copy on the phone for offline use) until they delete it, together with their starred riders and horses. Sign in on another phone or computer and it's all there. Delete one show with **Delete** on its card in the Shows tab, or everything under **Settings → Delete all my data**.
 
 ## Real-world schedules
 
@@ -38,7 +39,7 @@ Show schedules come in many layouts. Ringside Timer handles, with both the free 
 - **Timetables with entry counts instead of names** (e.g. "5 | A2 Competition | 1.15m/1.10m J/AD | 11 | 8h45 - 9h15"): times are estimated from the counts until the starting lists are published.
 - **Time windows and shared time slots**: when the timetable gives windows, the estimates follow the organiser's own plan (time per horse and changeovers), and live updates take over on the day. Classes sharing one time slot run straight on.
 - **SA Showjumping starting lists** (class details block, height sections, draw numbers, SCR/VET markers); breeding lines and badges are ignored.
-- **Several files at once** (timetable + starting lists), or **add starting lists later**: load the new file while your show is open and choose *Add to current show*. Classes are matched by class number.
+- **Several files at once** (timetable + starting lists), or **add starting lists later**: tap **+ Add schedule / starting lists** on the show's card in the Shows tab. Classes are matched by class number.
 - Show information pages (banking, terms, prizes) are ignored. Duplicate class numbers and starting lists from a different show are flagged for checking.
 
 ## How the times are worked out
@@ -64,7 +65,7 @@ Estimated time for an entry = class start time + (number of non-scratched horses
 
 1. Open the site on your phone, tap **Create account**, then sign in. Tap **Load the sample show** to try it.
 2. Or tap **Download blank template**, fill it in (Excel or Google Sheets → save as CSV), and load it.
-3. Check the **Edit** screen, then tap **Looks good →**.
+3. Check the edit screen, then tap **Looks good →**. To change it later, tap **Edit** on the show's card (Shows tab) or **Edit schedule** on the Arenas screen.
 4. On show day, at the ring: type the draw number in **Now jumping #** and tap **Go** (or just tap **Next ▸** for each new horse). Tap a horse to scratch it or star it.
 5. In **My riders**, star your riders and tap **Show plan: Print / PDF** or **Send plan on WhatsApp**.
 6. Tip: add the site to your home screen (Share → Add to Home Screen) for one-tap access.
@@ -75,7 +76,7 @@ Estimated time for an entry = class start time + (number of non-scratched horses
 1. **Publish.** An approved organiser loads the show (CSV, PDF/Excel or AI), check it, then go to **Live → Publish as a live show**. Tick the box confirming you may share the running order. You get a **marshal code** (6 letters/numbers).
 2. **Marshals.** Tap **Send to marshals** to send them a WhatsApp message with the link and code. Each marshal signs in, opens the show, taps **I'm a marshal** and enters the code. Their **Marshal timing screen** shows who's in the ring, a big **NEXT** button, **Scratch**, **Undo** and **Finish class**.
 3. **Everyone else.** Riders, grooms and parents open **Live** and tap the show, or use the link from **Share link to this show**. They see the estimated times correcting themselves as the marshals record each round, can star their riders and get the show plan. They can't change anything.
-4. **Changes.** Only the publisher can edit the schedule (Edit tab); edits reach everyone automatically. **Change code** locks out old marshals. **Remove live show** deletes it for everyone.
+4. **Changes.** Only the publisher can edit the schedule (Edit schedule on the Arenas screen); edits reach everyone automatically. **Change code** locks out old marshals. **Remove live show** deletes it for everyone.
 5. **Privacy.** Published shows (with riders' and horses' names) are deleted automatically **7 days after the show date**. Only signed-in users can see them, and the database itself enforces who may change what.
 
 ## The CSV format

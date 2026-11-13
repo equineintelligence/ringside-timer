@@ -131,7 +131,31 @@
 
   function saveShow() { if (!show) return; if (show.cloud) store(ukey("cloud"), show); else libPut(show); }
   function saveSettings() { store("rt.settings", S); }
-  function saveStars() { store(ukey("stars"), stars); store(ukey("starsAt"), Date.now()); store(ukey("starsDirty"), true); libSyncSoon(); }
+  // Each show has its own rider list: own shows keep it inside the show (saved with it);
+  // live shows you follow keep it in your account under that live show's id.
+  let liveStars = {};
+  function bindStars() {
+    if (!show) { stars = { riders: [], horses: [] }; return; }
+    if (show.cloud) { const id = show.cloud.id; liveStars[id] = liveStars[id] || { riders: [], horses: [] }; stars = liveStars[id]; }
+    else { show.riders = show.riders && Array.isArray(show.riders.riders) ? show.riders : { riders: [], horses: [] }; if (!Array.isArray(show.riders.horses)) show.riders.horses = []; stars = show.riders; }
+  }
+  // Older versions had one rider list for everything: copy it into every saved show that has no list yet.
+  function migrateGlobalStars(g) {
+    const list = { riders: (g.riders || []).slice(), horses: (g.horses || []).slice() };
+    libIndex().filter((x) => !x.deleted).forEach((x) => {
+      const data = load(ukey("lib." + x.id)); if (!data) return;
+      if (data.riders && ((data.riders.riders || []).length || (data.riders.horses || []).length)) return;
+      data.riders = clone(list); data.updatedAt = Date.now(); store(ukey("lib." + x.id), data);
+      saveIndex(libIndex().map((y) => y.id === x.id ? Object.assign({}, y, { dirty: true, updatedAt: data.updatedAt, riders: list.riders.length + list.horses.length }) : y));
+      if (show && !show.cloud && show.libId === x.id) show.riders = clone(list);
+    });
+    forget(ukey("stars")); store(ukey("starsDirty"), true); libSyncSoon();
+  }
+  function saveStars() {
+    if (!show) return;
+    if (show.cloud) { store(ukey("liveStars"), liveStars); store(ukey("starsAt"), Date.now()); store(ukey("starsDirty"), true); libSyncSoon(); }
+    else saveShow();
+  }
 
   function blankLive() { return { startedAt: null, finishedAt: null, nowId: null, nowAt: null, marks: [] }; }
   function makeClass(o) {
@@ -890,11 +914,12 @@
     // older versions kept a single show: move it into the saved-shows library
     const legacy = load(ukey("show")) || load("rt.show");
     if (legacy) { try { const sh = normalizeShow(legacy); libPut(sh); } catch (e) { /* ignore */ } forget(ukey("show")); forget("rt.show"); }
-    if (!load(ukey("stars")) && load("rt.stars")) { store(ukey("stars"), load("rt.stars")); store(ukey("starsDirty"), true); }
+    liveStars = load(ukey("liveStars")) || {};
+    const oldGlobal = load(ukey("stars")) || load("rt.stars");
     forget("rt.stars");
-    stars = Object.assign({ riders: [], horses: [] }, load(ukey("stars")) || {});
     const cur = load(ukey("current"));
     if (cur) libOpen(cur);
+    if (oldGlobal) migrateGlobalStars(oldGlobal);
     // re-open the live show this person was following, if any
     const cached = load(ukey("cloud"));
     if (load(ukey("active")) === "cloud" && cached && cached.cloud) {
@@ -997,7 +1022,7 @@
   const lib = { timer: null, syncing: false, again: false, lastError: null, lastSync: null };
   function libIndex() { return load(ukey("lib")) || []; }
   function saveIndex(ix) { store(ukey("lib"), ix); }
-  function libCounts(sh) { return { classes: (sh.classes || []).length, entries: (sh.classes || []).reduce((n, c) => n + (c.entries || []).length, 0) }; }
+  function libCounts(sh) { const r = sh.riders || {}; return { classes: (sh.classes || []).length, entries: (sh.classes || []).reduce((n, c) => n + (c.entries || []).length, 0), riders: (r.riders || []).length + (r.horses || []).length }; }
   // Save the open (own) show into the library and queue a sync.
   function libPut(sh) {
     if (!sh.libId) sh.libId = "s" + Date.now().toString(36) + uid();
@@ -1072,13 +1097,15 @@
       if (gone.length) saveIndex(libIndex().filter((y) => !gone.some((g) => g.id === y.id)));
       // 5. starred riders and horses
       if (load(ukey("starsDirty"))) {
-        await api("user_stars?on_conflict=user_id", { method: "POST", headers: { Prefer: "resolution=merge-duplicates,return=minimal" }, body: { stars, updated_at: new Date(load(ukey("starsAt")) || Date.now()).toISOString() } });
+        await api("user_stars?on_conflict=user_id", { method: "POST", headers: { Prefer: "resolution=merge-duplicates,return=minimal" }, body: { stars: { live: liveStars }, updated_at: new Date(load(ukey("starsAt")) || Date.now()).toISOString() } });
         forget(ukey("starsDirty"));
       } else {
         const st = await api("user_stars?select=stars,updated_at");
         if (st && st[0] && Date.parse(st[0].updated_at) > (load(ukey("starsAt")) || 0)) {
-          stars = Object.assign({ riders: [], horses: [] }, st[0].stars || {});
-          store(ukey("stars"), stars); store(ukey("starsAt"), Date.parse(st[0].updated_at));
+          const srv = st[0].stars || {};
+          if (srv.live) { liveStars = srv.live; store(ukey("liveStars"), liveStars); bindStars(); }
+          else if ((srv.riders || []).length || (srv.horses || []).length) migrateGlobalStars(srv); // list from the older one-list-for-everything version
+          store(ukey("starsAt"), Date.parse(st[0].updated_at));
         }
       }
       lib.lastError = null; lib.lastSync = Date.now();
@@ -1136,7 +1163,7 @@
       keys.forEach((k) => { if (k === "rt.show" || k === "rt.stars" || (uid && k.startsWith("rt.") && k.endsWith("." + uid)) || (uid && /^rt\.pending\./.test(k) && k.endsWith("." + uid))) forget(k); });
     } catch (e) { /* storage unavailable */ }
     store(ukey("wipe"), true);
-    show = null; stars = { riders: [], horses: [] }; pending = { classes: {}, status: {} }; ui.open = {}; ui.arena = null;
+    show = null; stars = { riders: [], horses: [] }; liveStars = {}; pending = { classes: {}, status: {} }; ui.open = {}; ui.arena = null;
     setView("load"); banner("All your saved shows and riders have been deleted.", "ok", [], 6000);
     libSync();
   }
@@ -1682,7 +1709,24 @@
     else if (r.value === "sr") toggleStar("riders", e.rider);
     else if (r.value === "sh") toggleStar("horses", e.horse);
   }
+  async function copyRiders() {
+    if (!show) return;
+    const others = libIndex().filter((x) => !x.deleted && x.id !== show.libId && (x.riders || 0) > 0);
+    if (!others.length) { banner("None of your other shows have riders in their list yet.", "", [], 5000); return; }
+    const r = await dialog("Copy riders from…", "<p>Adds that show's starred riders and horses to <strong>" + esc(show.name) + "</strong>. Only those entered in this show will appear in your plan.</p>",
+      others.slice(0, 12).map((x) => ({ label: x.name + " (★ " + x.riders + ")", value: x.id, cls: "opt" })).concat([{ label: "Cancel", value: "cancel", cls: "opt" }]));
+    if (!r.value || r.value === "cancel") return;
+    const src = load(ukey("lib." + r.value));
+    const list = (src && src.riders) || { riders: [], horses: [] };
+    bindStars();
+    let n = 0;
+    (list.riders || []).forEach((x) => { if (!stars.riders.includes(x)) { stars.riders.push(x); n++; } });
+    (list.horses || []).forEach((x) => { if (!stars.horses.includes(x)) { stars.horses.push(x); n++; } });
+    saveStars(); render();
+    banner("Copied " + n + " rider" + (n === 1 ? "" : "s") + "/horse" + (n === 1 ? "" : "s") + " into this show's list.", "ok", [], 5000);
+  }
   function toggleStar(kind, name) {
+    bindStars();
     const n = norm(name); const arr = stars[kind];
     const i = arr.indexOf(n); if (i >= 0) arr.splice(i, 1); else arr.push(n);
     saveStars(); render();
@@ -1700,15 +1744,15 @@
     if (v === "auth" && !ui.authMode) authMode("signin");
     $$(".view").forEach((s) => (s.hidden = s.id !== "view-" + v));
     $$("#tabbar button").forEach((b) => b.setAttribute("aria-current", b.dataset.view === v ? "page" : "false"));
-    $("#tabbar").hidden = !show || v === "auth";
-    $('#tabbar [data-view="review"]').hidden = isCloud() && role() !== "owner";
+    $("#tabbar").hidden = v === "auth";
+    $$('#tabbar [data-view="arenas"], #tabbar [data-view="mine"]').forEach((b) => (b.disabled = !show));
     if (v === "live" && !cloudUI.list) loadShowList();
     $(".foot").hidden = v === "auth";
     render();
     window.scrollTo(0, 0);
   }
   function render() {
-    tickClock();
+    tickClock(); bindStars();
     if (ui.view === "auth") { $("#showName").textContent = "Sign in to continue"; return; }
     $("#showName").textContent = show ? (isCloud() ? "● " : "") + show.name + (show.date ? " · " + show.date : "") : "No show loaded";
     if (!show) { if (ui.view === "live") renderLive(); else renderLoad(); renderLiveStrip(); return; }
@@ -1737,16 +1781,19 @@
   // ---------- Load ----------
   function renderLoad() {
     const ix = libIndex().filter((x) => !x.deleted).sort((a, b) => (b.date || "").localeCompare(a.date || "") || b.updatedAt - a.updatedAt);
-    $("#libCard").hidden = !ix.length;
-    $("#libStatus").textContent = libStatusText();
+    $("#libEmpty").hidden = !!ix.length;
+    $("#libStatus").textContent = ix.length ? libStatusText() : "";
     const curId = show && !isCloud() ? show.libId : null;
-    $("#libList").innerHTML = ix.map((x) => '<div class="lib-item' + (x.id === curId ? " current" : "") + '"><button type="button" class="lib-open" data-libopen="' + esc(x.id) + '"><strong>' + esc(x.name) + '</strong><span class="muted small">' + esc(x.date || "No date") + " · " + (x.classes || 0) + " classes · " + (x.entries || 0) + " entries" + (x.id === curId ? " · open now" : "") + (x.dirty ? " · not synced yet" : "") + '</span></button><button type="button" class="icon-btn" data-libdel="' + esc(x.id) + '" aria-label="Delete ' + esc(x.name) + '">🗑</button></div>').join("");
+    $("#libList").innerHTML = ix.map((x) => '<div class="show-card' + (x.id === curId ? " current" : "") + '"><div class="sc-main"><strong>' + esc(x.name) + (x.id === curId ? ' <span class="badge">Open</span>' : "") + '</strong><span class="muted small">' + esc(x.date || "No date") + " · " + (x.classes || 0) + ((x.classes || 0) === 1 ? " class · " : " classes · ") + (x.entries || 0) + ((x.entries || 0) === 1 ? " rider entered · ★ " : " riders entered · ★ ") + (x.riders || 0) + " in my list" + (x.dirty ? " · not synced yet" : "") + "</span></div>" +
+      '<div class="row-btns"><button type="button" class="btn small primary" data-libopen="' + esc(x.id) + '">Open</button><button type="button" class="btn small" data-libedit="' + esc(x.id) + '">Edit</button><button type="button" class="btn small" data-libadd="' + esc(x.id) + '">+ Add schedule / starting lists</button><button type="button" class="btn small danger" data-libdel="' + esc(x.id) + '">Delete</button></div></div>').join("");
     $("#btnReadAI").hidden = !aiConfigured;
     $("#aiPrivacy").hidden = !aiConfigured;
   }
 
   // ---------- Arenas ----------
   function renderArenas() {
+    $("#arenaShowName").textContent = show.name + (show.date ? " · " + show.date : "");
+    $("#btnEditSched").hidden = isCloud() && role() !== "owner";
     if (!show.arenas.length) { $("#arenaClasses").innerHTML = '<p class="empty">No classes yet. Add some in Edit.</p>'; $("#arenaTabs").innerHTML = ""; $("#arenaSummary").innerHTML = ""; return; }
     if (!ui.arena || !show.arenas.some((a) => a.name === ui.arena)) ui.arena = show.arenas[0].name;
     const R = compute(true), B = compute(false);
@@ -1821,6 +1868,11 @@
 
   // ---------- My riders ----------
   function renderMine() {
+    bindStars();
+    const n = stars.riders.length + stars.horses.length;
+    $("#mineFor").textContent = "For " + show.name + (show.date ? " (" + show.date + ")" : "") + " · ★ " + n + " in this show's list. Each show has its own list.";
+    $("#btnCopyRiders").hidden = isCloud() ? !libIndex().some((x) => !x.deleted && (x.riders || 0) > 0) : !libIndex().some((x) => !x.deleted && x.id !== show.libId && (x.riders || 0) > 0);
+    $("#btnClearRiders").hidden = !n;
     const R = compute(true);
     const clashes = findClashes(R);
     const q = norm($("#inSearch").value);
@@ -1926,7 +1978,7 @@
     if (/\.json$/i.test(file.name) || /^\s*\{/.test(text)) {
       const d = JSON.parse(text);
       if (!d || !(d.show || d.classes)) throw new Error("That doesn't look like a Ringside Timer backup.");
-      if (d.stars) { stars = Object.assign({ riders: [], horses: [] }, d.stars); saveStars(); }
+      if (d.stars && d.show && !d.show.riders) d.show.riders = { riders: d.stars.riders || [], horses: d.stars.horses || [] }; // older backups
       if (d.settings) { S = Object.assign({}, DEFAULTS, d.settings); saveSettings(); applyTheme(); }
       useShow(normalizeShow(d.show || d), false);
       banner("Backup restored.", "ok", [], 5000);
@@ -1964,40 +2016,61 @@
     } finally { busy(false); }
   }
   // After reading a schedule: if the person already has a show open, offer to add these running orders to it.
+  // After reading a file: either a brand-new show, or added to the show chosen with "Add schedule / starting lists".
   async function importResult(sh) {
-    const withEntries = sh.classes.filter((c) => c.entries.length);
-    const base = show && !isCloud() ? show : null;
-    if (base && withEntries.length) {
-      const matches = withEntries.filter((c) => base.classes.some((b) => norm(b.no) === norm(c.no))).length;
-      const r = await dialog("Add to “" + base.name + "”?", "<p>This file has running orders for " + withEntries.length + " class" + (withEntries.length > 1 ? "es" : "") + (matches ? " (" + matches + " match class numbers in your current show)" : "") + ".</p><p>Add them to <strong>" + esc(base.name) + "</strong>, or save this as a separate new show?</p>",
-        [{ label: "New show", value: "new" }, { label: "Add to current show", value: "add", cls: "primary" }]);
-      if (r.value === "add") { mergeInto(base, sh); return; }
+    const target = ui.importTarget; setImportTarget(null);
+    if (target) {
+      if (isCloud()) leaveCloudQuiet();
+      if (!show || show.libId !== target) libOpen(target);
+      if (show && show.libId === target) { mergeInto(show, sh); return; }
     }
     useShow(sh, true);
   }
+  function setImportTarget(id) {
+    ui.importTarget = id || null;
+    const x = id ? libIndex().find((y) => y.id === id) : null;
+    $("#newShowCard").classList.toggle("adding", !!x);
+    $("#uploadTitle").textContent = x ? "Add to “" + x.name + "”" : "Start a new show";
+    $("#uploadHint").textContent = x ? "Add a timetable or starting lists to this show. Classes are matched by class number; new classes are added at the end of their arena." : "Upload the schedule. You can pick several files at once, for example the timetable plus starting lists. Starting lists published later can be added to the show from its card above.";
+    $("#btnCancelAdd").hidden = !x; $("#newOnly").hidden = !!x;
+    $("#docChoice").hidden = true; ui.docFiles = null;
+  }
+  // Add a timetable and/or starting lists to an existing show. Classes are matched by class number (same arena first).
   function mergeInto(base, sh) {
     let filled = 0, added = 0;
     sh.classes.forEach((c) => {
-      if (!c.entries.length) return;
       const cands = base.classes.filter((b) => norm(b.no) === norm(c.no));
-      const target = cands.find((b) => norm(b.arena) === norm(c.arena)) || cands.find((b) => !b.entries.length) || cands[0];
-      if (target) {
-        target.entries = c.entries.map((e) => makeEntry({ draw: e.draw, rider: e.rider, horse: e.horse, status: e.status, flags: e.flags }));
-        target.live = blankLive();
-        if (!target.height && c.height) target.height = c.height;
-        target.flags = target.flags.filter((f) => !/running order/i.test(f)).concat(["Running order added (" + c.entries.length + " entries) — please check"]);
-        if (target.expected && Math.abs(target.expected - c.entries.length) > 2) target.flags.push("Timetable said " + target.expected + " entries, running order has " + c.entries.length);
-        filled++;
+      if (!c.entries.length) {
+        // timetable row: fill in what the show doesn't have yet (times, height, entry count)
+        const t = cands.find((b) => norm(b.arena) === norm(c.arena)) || cands[0];
+        if (t) {
+          ["start", "end", "height", "name"].forEach((k) => { if (!t[k] && c[k]) t[k] = c[k]; });
+          if (!t.expected && c.expected) t.expected = c.expected;
+          if (c.combined && !t.start) t.combined = true;
+          filled++; return;
+        }
       } else {
-        const nc = makeClass(Object.assign({}, c, { id: uid(), live: blankLive(), flags: c.flags.concat(["Not in your timetable — added at the end of " + c.arena + ". Check it belongs to this show."]) }));
-        const lastIdx = base.classes.map((b) => b.arena).lastIndexOf(c.arena);
-        if (lastIdx >= 0) base.classes.splice(lastIdx + 1, 0, nc); else base.classes.push(nc);
-        added++;
+        // starting list: replace that class's riders
+        const target = cands.find((b) => norm(b.arena) === norm(c.arena)) || cands.find((b) => !b.entries.length) || cands[0];
+        if (target) {
+          target.entries = c.entries.map((e) => makeEntry({ draw: e.draw, rider: e.rider, horse: e.horse, status: e.status, flags: e.flags }));
+          target.live = blankLive();
+          if (!target.height && c.height) target.height = c.height;
+          target.flags = target.flags.filter((f) => !/running order/i.test(f)).concat(["Running order added (" + c.entries.length + " entries) — please check"]);
+          if (target.expected && Math.abs(target.expected - c.entries.length) > 2) target.flags.push("Timetable said " + target.expected + " entries, running order has " + c.entries.length);
+          filled++; return;
+        }
       }
+      // not in the show yet: add it at the end of its arena
+      const note = base.classes.length ? ["Not in your timetable — added at the end of " + c.arena + ". Check it belongs to this show."] : [];
+      const nc = makeClass(Object.assign({}, c, { id: uid(), live: blankLive(), flags: c.flags.concat(note) }));
+      const lastIdx = base.classes.map((b) => b.arena).lastIndexOf(c.arena);
+      if (lastIdx >= 0) base.classes.splice(lastIdx + 1, 0, nc); else base.classes.push(nc);
+      added++;
     });
     syncArenas(base); show = base; saveShow();
     setView("review");
-    banner("Added running orders to " + filled + " class" + (filled === 1 ? "" : "es") + (added ? ", plus " + added + " class" + (added === 1 ? "" : "es") + " that weren't in your timetable (amber)" : "") + ".", added ? "" : "ok", [], 9000);
+    banner("Updated " + filled + " class" + (filled === 1 ? "" : "es") + (added ? " and added " + added + " new class" + (added === 1 ? "" : "es") + " (check the amber ones)" : "") + " in “" + esc(base.name) + "”.", added ? "" : "ok", [], 9000);
   }
   function downloadTemplate() { download("ringside-timer-template.csv", CSV_COLS.join(",") + "\r\n", "text/csv"); }
   async function loadSample() {
@@ -2010,7 +2083,7 @@
     } catch (e) { banner("Couldn't load the sample show: " + esc(e.message), "err"); }
     finally { busy(false); }
   }
-  function backupJSON() { return JSON.stringify({ app: "ringside-timer", version: 1, exported: new Date().toISOString(), show, stars, settings: S }, null, 1); }
+  function backupJSON() { return JSON.stringify({ app: "ringside-timer", version: 2, exported: new Date().toISOString(), show, settings: S }, null, 1); }
   function fileSafe(s) { return String(s || "show").replace(/[^\w\-]+/g, "-").replace(/-+/g, "-").slice(0, 40); }
 
   function applyTheme() {
@@ -2028,8 +2101,9 @@
     $("#btnDeleteShow").onclick = deleteThisShow;
     $("#btnDeleteAll").onclick = deleteAllMyData;
     $("#libList").addEventListener("click", async (ev) => {
-      const o = ev.target.closest("[data-libopen]"), d = ev.target.closest("[data-libdel]");
-      if (o) { if (isCloud()) leaveCloudQuiet(); if (libOpen(o.dataset.libopen)) setView("arenas"); else banner("That show isn't on this phone yet. Try again when you have signal.", "err", [], 6000); }
+      const o = ev.target.closest("[data-libopen]"), d = ev.target.closest("[data-libdel]"), ed = ev.target.closest("[data-libedit]"), ad = ev.target.closest("[data-libadd]");
+      if (o || ed) { const id = (o || ed).dataset[o ? "libopen" : "libedit"]; if (isCloud()) leaveCloudQuiet(); if (libOpen(id)) setView(o ? "arenas" : "review"); else banner("That show isn't on this phone yet. Try again when you have signal.", "err", [], 6000); }
+      if (ad) { setImportTarget(ad.dataset.libadd); $("#newShowCard").scrollIntoView({ behavior: "smooth", block: "start" }); }
       if (d) {
         const x = libIndex().find((y) => y.id === d.dataset.libdel); if (!x) return;
         const r = await dialog("Delete “" + x.name + "”?", "<p>This permanently deletes it from your account and every device. It can't be undone.</p>", [{ label: "Cancel", value: "no" }, { label: "Delete", value: "yes", cls: "danger" }]);
@@ -2037,6 +2111,22 @@
       }
     });
     $("#btnPlanWA").onclick = sendPlanWhatsApp;
+    $("#btnNewShowTop").onclick = () => { setImportTarget(null); $("#newShowCard").scrollIntoView({ behavior: "smooth", block: "start" }); };
+    $("#btnCancelAdd").onclick = () => setImportTarget(null);
+    $("#btnEditSched").onclick = () => setView("review");
+    $("#btnEmptyShow").onclick = async () => {
+      const r = await dialog("Start an empty show", '<label>Show name<input name="name" maxlength="160" autocomplete="off"></label><label>Show date<input type="date" name="date" value="' + saNow().date + '"></label>',
+        [{ label: "Cancel", value: "no" }, { label: "Create show", value: "yes", cls: "primary" }]);
+      if (r.value !== "yes") return;
+      const sh = normalizeShow({ name: (r.vals.name || "").trim() || "New show", date: r.vals.date || saNow().date, classes: [makeClass({ arena: "Main Arena", no: "1", start: S.dayStart })] });
+      useShow(sh, false); setView("review"); banner("Type in your classes and riders here, or add a schedule later from the Shows tab.", "ok", [], 8000);
+    };
+    $("#btnCopyRiders").onclick = copyRiders;
+    $("#btnClearRiders").onclick = async () => {
+      bindStars(); const n = stars.riders.length + stars.horses.length; if (!n) return;
+      const r = await dialog("Clear this rider list?", "<p>Removes all " + n + " starred riders and horses from <strong>" + esc(show.name) + "</strong>. Other shows' lists aren't affected.</p>", [{ label: "Cancel", value: "no" }, { label: "Clear list", value: "yes", cls: "danger" }]);
+      if (r.value === "yes") { stars.riders.length = 0; stars.horses.length = 0; saveStars(); render(); }
+    };
     $("#btnPlanCopy").onclick = copyPlan;
     $("#btnSample").onclick = loadSample;
 
@@ -2151,10 +2241,7 @@
       if (r.value !== "yes") return;
       show.classes.forEach((c) => { c.live = blankLive(); cloudTouch(c); }); saveShow(); banner("Live updates cleared.", "ok", [], 4000);
     };
-    $("#btnNewShow").onclick = async () => {
-      const r = await dialog("Load a different show?", "<p>Your current show stays saved until you load a new one. Tip: download a backup first.</p>", [{ label: "Cancel", value: "no" }, { label: "Continue", value: "yes", cls: "primary" }]);
-      if (r.value === "yes") { if (isCloud()) { clearInterval(cloudUI.pollTimer); store(ukey("active"), "local"); show = null; } $("#docChoice").hidden = true; ui.view = "load"; $$(".view").forEach((s) => (s.hidden = s.id !== "view-load")); $("#tabbar").hidden = true; renderLoad(); }
-    };
+    $("#btnNewShow").onclick = () => setView("load");
   }
   function confirmDel(c) { return window.confirm ? window.confirm("Delete Class " + (c.no || "") + " and its " + c.entries.length + " entries?") : true; }
   function onReviewEdit(ev) {
