@@ -1,6 +1,6 @@
 // Ringside Timer service worker — keeps the app working offline once loaded.
 // Bump VERSION when you change files so phones pick up the new version.
-const VERSION = "rt-v3";
+const VERSION = "rt-v6";
 const SHELL = ["./", "index.html", "style.css", "app.js", "config.js", "sample-schedule.csv", "manifest.webmanifest", "icon-192.png", "icon-512.png", "favicon.png", "apple-touch-icon.png"];
 const LIBS = [
   "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js",

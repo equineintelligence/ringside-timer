@@ -29,7 +29,17 @@ Live site (once set up): **https://equineintelligence.github.io/ringside-timer**
 - **Show plan** for your starred riders and horses: every round with estimated time, arena, class, height, format and draw, as a branded **Print / PDF** page or a ready-made **WhatsApp** message (or copy the text).
 - **Clash warning** when the same rider has two rounds less than 10 minutes apart (in any arena).
 - **Export / share**: download the show as CSV, or as a JSON backup that can be loaded again.
-- Everything is saved **on the phone** (localStorage), separately for each account, so a refresh or lost signal doesn't wipe it and two people sharing a phone don't see each other's show.
+- **My saved shows**: every schedule a user loads is kept in their account (with a copy on the phone for offline use) until they delete it, together with their starred riders and horses. Sign in on another phone or computer and it's all there. Delete one show with the bin icon on the Load screen, or everything under **Settings → Delete all my data**.
+
+## Real-world schedules
+
+Show schedules come in many layouts. Ringside Timer handles, with both the free reader and the AI reader:
+
+- **Timetables with entry counts instead of names** (e.g. "5 | A2 Competition | 1.15m/1.10m J/AD | 11 | 8h45 - 9h15"): times are estimated from the counts until the starting lists are published.
+- **Time windows and shared time slots**: when the timetable gives windows, the estimates follow the organiser's own plan (time per horse and changeovers), and live updates take over on the day. Classes sharing one time slot run straight on.
+- **SA Showjumping starting lists** (class details block, height sections, draw numbers, SCR/VET markers); breeding lines and badges are ignored.
+- **Several files at once** (timetable + starting lists), or **add starting lists later**: load the new file while your show is open and choose *Add to current show*. Classes are matched by class number.
+- Show information pages (banking, terms, prizes) are ignored. Duplicate class numbers and starting lists from a different show are flagged for checking.
 
 ## How the times are worked out
 
@@ -127,6 +137,6 @@ You only need a web browser.
 ## Privacy (POPIA)
 
 - Accounts store only the email address and a hashed password (Supabase Auth). Users agree to this when they create an account. Set `CONTACT_EMAIL` in `config.js` so people know who to contact to see, correct or delete their details.
-- The show is saved only in the visitor's own browser.
+- Uploaded files are never stored. Processed shows and starred riders are saved in the user's own account (Supabase, visible only to them) until they delete them; deleting an account deletes them too.
 - The free on-phone reader never sends the file anywhere.
 - "Read schedule with AI" sends the file to an AI service (Anthropic, via your Supabase Edge Function) to be processed. Nothing from the schedule is stored. The only record kept is a daily-scrambled account ID, a timestamp and a success/fail flag, deleted automatically after 30 days.

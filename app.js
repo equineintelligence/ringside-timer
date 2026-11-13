@@ -107,7 +107,8 @@
     if (/accumulator|\b269\b/.test(s)) return FORMATS[4];
     if (/two rounds|2 rounds|\b273\b|second round/.test(s)) return FORMATS[3];
     if (/jump[\s-]?off|238\.2\.2|a2\.2|238\.1\.2/.test(s)) return FORMATS[2];
-    if (/speed|against the clock|238\.2\.1|table c|\b263\b|a2\.1/.test(s)) return FORMATS[0];
+    if (/\ba1\b|table a1|not against the clock|clear round/.test(s)) return FORMATS[5];
+    if (/speed|against the clock|238\.2\.1|table c|\b263\b|a2\.1|\ba2\b|table a2/.test(s)) return FORMATS[0];
     if (/^other$|optimum|not against the clock|238\.1\.1|power|puissance|six bar|derby|equitation|style/.test(s)) return FORMATS[5];
     return null;
   }
@@ -128,13 +129,13 @@
   const CFG = window.RINGSIDE_CONFIG || {};
   const aiConfigured = !!(CFG.SUPABASE_URL && CFG.SUPABASE_ANON_KEY && !/YOUR-/.test(CFG.SUPABASE_URL + CFG.SUPABASE_ANON_KEY));
 
-  function saveShow() { if (show) store(ukey(show.cloud ? "cloud" : "show"), show); }
+  function saveShow() { if (!show) return; if (show.cloud) store(ukey("cloud"), show); else libPut(show); }
   function saveSettings() { store("rt.settings", S); }
-  function saveStars() { store(ukey("stars"), stars); }
+  function saveStars() { store(ukey("stars"), stars); store(ukey("starsAt"), Date.now()); store(ukey("starsDirty"), true); libSyncSoon(); }
 
   function blankLive() { return { startedAt: null, finishedAt: null, nowId: null, nowAt: null, marks: [] }; }
   function makeClass(o) {
-    return Object.assign({ id: uid(), arena: "Arena 1", no: "", name: "", height: "", format: FORMATS[5], start: "", sameCourse: false, entries: [], flags: [], live: blankLive() }, o || {});
+    return Object.assign({ id: uid(), arena: "Arena 1", no: "", name: "", height: "", format: FORMATS[5], start: "", end: "", sameCourse: false, combined: false, expected: 0, entries: [], flags: [], live: blankLive() }, o || {});
   }
   function makeEntry(o) { return Object.assign({ id: uid(), draw: "", rider: "", horse: "", status: "starting", flags: [] }, o || {}); }
 
@@ -223,6 +224,9 @@
       if (!cur.height && get(r, "height")) cur.height = get(r, "height");
       const sc = norm(get(r, "same_course"));
       if (sc && /^(y|yes|true|1)$/.test(sc)) cur.sameCourse = true;
+      const cb = norm(get(r, "combined")); if (cb && /^(y|yes|true|1)$/.test(cb)) cur.combined = true;
+      const ex = parseInt(get(r, "expected_entries"), 10); if (ex > 0 && !cur.expected) cur.expected = ex;
+      const et = normTime(get(r, "end_time")); if (et && et !== "follow" && !cur.end) cur.end = et;
       const rider = get(r, "rider"), horse = get(r, "horse"), draw = get(r, "draw");
       if (rider || horse || draw) {
         const stt = norm(get(r, "status"));
@@ -238,28 +242,31 @@
   }
   // shared checks after any import
   function finishImportFlags(classes) {
-    const seen = {};
+    const seen = {}, nos = {};
+    classes.forEach((c) => { const k = c.arena + "|" + norm(c.no); if (c.no) nos[k] = (nos[k] || 0) + 1; });
+    classes.forEach((c) => { if (c.no && nos[c.arena + "|" + norm(c.no)] > 1) c.flags.push("Class number " + c.no + " appears more than once in " + c.arena + " — check the timetable"); });
     classes.forEach((c) => {
       const first = !seen[c.arena]; seen[c.arena] = true;
       if (!c.start) {
-        if (first) c.flags.push("First class in this arena has no start time (using " + S.dayStart + ")");
+        if (first) { c.flags.push("First class in this arena has no start time (using " + S.dayStart + ")"); c.combined = false; }
         else { c.start = "follow"; }
       }
       if (c.start === "follow" && first) c.flags.push('First class in the arena is "to follow" — please add a start time');
-      if (!c.entries.length) c.flags.push("No running order found for this class");
+      if (!c.entries.length && c.expected) c.flags.push("Running order not loaded yet — times use the " + c.expected + " entries in the timetable. Add the starting list when it's published.");
+      else if (!c.entries.length) c.flags.push("No running order found for this class");
       if (!c.height) c.flags.push("No height found");
     });
   }
 
   function showToCSV(withExtras) {
-    const cols = CSV_COLS.concat(withExtras ? ["status", "same_course"] : []);
+    const cols = CSV_COLS.concat(withExtras ? ["status", "same_course", "expected_entries", "combined", "end_time"] : []);
     const lines = [cols.join(",")];
     show.classes.forEach((c) => {
       const base = [c.arena, c.no, c.name, c.height, c.format];
       const list = c.entries.length ? c.entries : [null];
       list.forEach((e, i) => {
         const row = base.concat([i === 0 ? c.start : "", e ? e.draw : "", e ? e.rider : "", e ? e.horse : ""]);
-        if (withExtras) row.push(e ? e.status : "", i === 0 && c.sameCourse ? "yes" : "");
+        if (withExtras) row.push(e ? e.status : "", i === 0 && c.sameCourse ? "yes" : "", i === 0 && c.expected ? c.expected : "", i === 0 && c.combined ? "yes" : "", i === 0 ? c.end || "" : "");
         lines.push(row.map(csvCell).join(","));
       });
     });
@@ -313,11 +320,17 @@
     return lines;
   }
 
-  const RE_CLASS = /\bclass\s*(?:no\.?|number|nr\.?|#)?\s*[:.\-]?\s*(\d{1,3}[a-z]?)\b/i;
-  const RE_HEIGHT = /\b(\d[.,]\d{2})\s*m\b|\b(\d{2,3})\s*cm\b/i;
+  const RE_CLASS = /\bclass\s*(?:no\.?|number|nr\.?|#)?\s*[:.\-]?\s*(\d{1,3}(?:\.\d{1,2})?[a-z]?)\b/i;
+  const RE_HEIGHT = /\b(\d[.,]\d{1,2})\s*m\b|\b(\d{2,3})\s*cm\b/i;
+  const RE_HEIGHTS = /(\d[.,]\d{1,2}\s*m|\d{2,3}\s*cm)(\s*\/\s*(\d[.,]\d{1,2}\s*m?|\d{2,3}\s*(cm)?|\d\s*m))*/i;
   const RE_TIME = /\b([01]?\d|2[0-3])\s*[:hH]\s*([0-5]\d)\b|\b([01]?\d|2[0-3])\.([0-5]\d)(?!\s*m\b)(?!\d)/;
+  const RE_TIME_RANGE = /\b([01]?\d|2[0-3])\s*[:hH.]\s*([0-5]\d)\s*(?:-|–|to)\s*([01]?\d|2[0-3])\s*[:hH.]\s*([0-5]\d)\b/;
   const RE_FOLLOW = /to follow|follows|followed|thereafter|\bafter class\b|\bfollow\b/i;
   const RE_ARENA = /\b(arena|ring)\s*[:\-]?\s*([a-z0-9][\w ]{0,20})/i;
+  const RE_CLASSTYPE = /\b(a[12]\b|table [abc]|competition|phases?|speed|jump[\s-]?off|clear round|accumulator|two rounds|puissance|power|derby|equitation|optimum|grand prix|handicap|h\/cap)/i;
+  // lines on show information pages that are never riders or classes
+  const RE_NOISE = /\b(bank|account|branch|swift|refund|entry fee|entries close|closing date|terms|conditions|catering|weather forecast|forecast from|enquir|e-?mail|www\.|https?:|@|levy|levies|rosette|prize money|dogs|liable|responsib|disclaimer|organisers reserve|office hours|powered by|classic view|tap to open|click on|deposit|vat\b|sasj|saef|fei rules|show holding body|course designer|speed \/ spread|loading)/i;
+  const MONTHS = { jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12 };
 
   function findTime(s) {
     const m = s.match(RE_TIME);
@@ -326,61 +339,140 @@
     if (m[3] != null && h < 6) return null; // "1.10" is a height, not a time
     return pad(h) + ":" + pad(mi);
   }
+  function findTimeRange(s) {
+    const m = s.match(RE_TIME_RANGE);
+    return m ? { start: pad(+m[1]) + ":" + m[2], end: pad(+m[3]) + ":" + m[4] } : null;
+  }
   function findHeight(s) {
-    const m = s.match(RE_HEIGHT);
+    const m = s.match(RE_HEIGHTS);
     if (!m) return "";
-    if (m[1]) return m[1].replace(",", ".") + "m";
-    return (+m[2] / 100).toFixed(2) + "m";
+    return m[0].replace(/,/g, ".").replace(/\s+/g, "").replace(/(\d)m(?=\/|$)/g, "$1m");
+  }
+  function findDate(s) {
+    let m = s.match(/\b(\d{4})-(\d{2})-(\d{2})\b/);
+    if (m) return m[1] + "-" + m[2] + "-" + m[3];
+    m = s.match(/\b(\d{1,2})(?:st|nd|rd|th)?[\s\-\/]+(?:of\s+)?([a-z]{3})[a-z]*[\s\-\/,]+(20\d{2})\b/i);
+    if (m && MONTHS[m[2].toLowerCase()]) return m[3] + "-" + pad(MONTHS[m[2].toLowerCase()]) + "-" + pad(+m[1]);
+    return null;
+  }
+  const BADGE = /^(stallion|scr|vet|w\/?d|hc|h\/c|nc|rsa|zaf)$/i;
+  // Names are mostly Capitalised words; sentences from terms and conditions are not.
+  const PARTICLES = /^(du|de|der|den|van|von|le|la|da|di|del|dos|in|of|the|and|on|o'|van't|ter|ten|y|a|my|i'm)$/i;
+  function looksLikeName(s) {
+    if (!s || s.length < 2 || s.length > 45 || /\d/.test(s) || /[:@=;]/.test(s) || !/[a-z]/i.test(s)) return false;
+    const words = s.trim().split(/\s+/);
+    if (words.length > 6) return false;
+    const lower = words.filter((w) => /^[a-z]/.test(w) && !PARTICLES.test(w));
+    return lower.length === 0 || (words.length >= 3 && lower.length === 1 && lower[0].length <= 3);
   }
 
   function linesToShow(lines, filename) {
     const classes = []; let arena = "Arena 1"; let cur = null; let cols = null;
+    let showName = "", showDate = "", docComp = "";
+    let pendPair = null, pendDraw = null, pendStatus = "starting";
     const setArena = (raw) => {
       arena = raw.replace(/\s+/g, " ").trim().replace(/^[:\-–\s]+|[:\-–\s]+$/g, "");
       if (arena === arena.toUpperCase()) arena = arena.toLowerCase().replace(/\b\w/g, (ch) => ch.toUpperCase()); // "MAIN ARENA" → "Main Arena"
       arena = arena.charAt(0).toUpperCase() + arena.slice(1);
     };
+    const addEntry = (draw, rider, horse, status, flagged) => {
+      const e = makeEntry({ draw: String(draw), rider: rider || "", horse: horse || "", status: status || "starting" });
+      if (flagged || !rider || !horse) e.flags.push("Could not split rider and horse — please check");
+      cur.entries.push(e);
+    };
+    const newClass = (o) => { cur = makeClass(Object.assign({ arena }, o)); cur._comp = docComp; classes.push(cur); cols = null; pendPair = null; pendDraw = null; return cur; };
     for (const raw of lines) {
       const line = String(raw || "").trim();
       if (!line) continue;
+      if (line === "=== NEXT DOCUMENT ===") { cur = null; cols = null; pendPair = pendDraw = null; docComp = ""; continue; }
       const flat = line.replace(/\t/g, " ");
-      const cm = flat.match(RE_CLASS);
-      const cells = line.split("\t").map((c) => c.trim()).filter(Boolean);
+      let cells = line.split("\t").map((c) => c.trim()).filter(Boolean);
+      // show name and date (before the first class of a document)
+      if (!showDate) { const d = findDate(flat); if (d && flat.length < 60) showDate = d; }
+      const kv = flat.match(/^(competition|show|event|arena|date|class|grade|height|type|rule)\s*:\s*(.+)$/i);
+      if (kv && /competition|show|event/i.test(kv[1])) { docComp = kv[2].trim(); if (!showName) showName = docComp; if (cur && !cur.entries.length) cur._comp = docComp; continue; }
+      if (!cur && !showName && /\bshow\b/i.test(flat) && flat.length <= 70 && !RE_NOISE.test(flat) && !RE_CLASS.test(flat)) { showName = flat.trim(); continue; }
+      if (RE_NOISE.test(flat) || /=/.test(flat)) continue;
+      if (/\b\d+\s*yr\b/i.test(flat) || /^(gelding|mare|stallion|colt|filly)\b/i.test(flat)) continue; // breeding line under the horse
+      if (kv && /^arena$/i.test(kv[1])) { setArena(kv[2]); if (cur && !cur.entries.length) cur.arena = arena; continue; }
+      if (kv && /^date$/i.test(kv[1])) { const d = findDate(kv[2]); if (d) showDate = showDate || d; continue; }
+      if (kv && /^(grade|height|type|rule)$/i.test(kv[1])) {
+        if (cur && !cur.entries.length) {
+          if (/height|grade/i.test(kv[1]) && !cur.height) cur.height = findHeight(kv[2]);
+          if (!cur._fmt) { const f = normalizeFormat(kv[2]); if (f) { cur.format = f; cur._fmt = true; } }
+        }
+        continue;
+      }
       // Arena heading
+      const cm = flat.match(RE_CLASS);
       if (!cm && flat.length <= 40 && /\b(arena|ring)\b/i.test(flat) && !/^\d/.test(cells[0] || "") && !findTime(flat)) {
         setArena(/^arena\s*:/i.test(flat) ? flat.replace(/^arena\s*:\s*/i, "") : flat);
         continue;
       }
+      // Timetable row without the word "Class": "1.2 | A2 Competition | 1.30m J/AD | 3 | 8h00 - 8h10"
+      // (the class number is often printed right up against the class type: "1.2 A2 Competition")
+      const lead = (cells[0] || "").match(/^(\d{1,3}(?:\.\d{1,2})?[a-z]?)\s+(\D.*)$/i);
+      if (!cm && lead && RE_CLASSTYPE.test(lead[2]) && RE_HEIGHTS.test(flat)) cells = [lead[1], lead[2]].concat(cells.slice(1));
+      if (!cm && /^\d{1,3}(\.\d{1,2})?[a-z]?$/i.test(cells[0] || "") && cells.length >= 3 && RE_HEIGHTS.test(flat) && RE_CLASSTYPE.test(flat)) {
+        const c = newClass({ no: cells[0] });
+        const typeCell = cells.slice(1).find((x) => RE_CLASSTYPE.test(x) && !RE_HEIGHTS.test(x)) || "";
+        const hCell = cells.slice(1).find((x) => RE_HEIGHTS.test(x)) || "";
+        c.height = findHeight(hCell);
+        const extra = hCell.replace(RE_HEIGHTS, "").replace(/\s+/g, " ").trim();
+        c.name = (typeCell + (extra ? " " + extra : "")).trim().slice(0, 80);
+        const f = normalizeFormat(typeCell); if (f) { c.format = f; c._fmt = true; }
+        const hIdx = cells.indexOf(hCell);
+        const cnt = cells.slice(hIdx + 1).find((x) => /^\d{1,3}$/.test(x));
+        if (cnt) c.expected = +cnt;
+        const tr = findTimeRange(flat);
+        if (tr) { c.start = tr.start; c.end = tr.end; }
+        else { const t = findTime(cells.slice(hIdx + 1).join(" ")); if (t) c.start = t; else { c.combined = true; c._noTime = true; } }
+        continue;
+      }
+      // Class heading: "Class 3 - 1.10m A2 Competition  09:00"
       if (cm && !/^\d{1,3}$/.test(cells[0] || "")) {
         const am = flat.match(RE_ARENA);
         if (am && flat.indexOf(am[0]) > -1 && !/arena familiar/i.test(flat)) setArena(am[1] + " " + am[2].split(/\s{1,}/)[0]);
-        cur = makeClass({ arena, no: cm[1] });
-        let name = flat.replace(cm[0], "").replace(RE_TIME, "").replace(RE_HEIGHT, "").replace(RE_FOLLOW, "")
+        const c = newClass({ no: cm[1] });
+        const body = flat.replace(/^class\s*:\s*/i, "");
+        let name = body.replace(cm[0], "").replace(RE_TIME_RANGE, "").replace(RE_TIME, "").replace(RE_HEIGHTS, "").replace(RE_FOLLOW, "")
           .replace(/^[\s:\-–|.,]+|[\s:\-–|.,]+$/g, "").replace(/\s{2,}/g, " ");
-        cur.name = name.slice(0, 80);
-        cur.height = findHeight(flat);
-        const t = findTime(flat); if (t) cur.start = t; else if (RE_FOLLOW.test(flat)) cur.start = "follow";
-        const f = normalizeFormat(flat); if (f) { cur.format = f; cur._fmt = true; }
-        classes.push(cur); cols = null;
+        c.name = name.slice(0, 80);
+        c.height = findHeight(body);
+        const tr = findTimeRange(body);
+        if (tr) { c.start = tr.start; c.end = tr.end; } else { const t = findTime(body); if (t) c.start = t; else if (RE_FOLLOW.test(body)) c.start = "follow"; }
+        const f = normalizeFormat(body); if (f) { c.format = f; c._fmt = true; }
         continue;
       }
-      if (!cur) {
-        const t = findTime(flat);
-        if (t && !RE_CLASS.test(flat)) continue;
-        continue;
-      }
+      if (!cur) continue;
       // Column heading row
       const lc = cells.map(norm);
       if (lc.some((c) => /rider|competitor|athlete/.test(c)) && lc.some((c) => /horse/.test(c))) {
         cols = { rider: lc.findIndex((c) => /rider|competitor|athlete/.test(c)), horse: lc.findIndex((c) => /horse/.test(c)), draw: lc.findIndex((c) => /^(draw|no\.?|nr|#|order|start|ro)$/.test(c)) };
         continue;
       }
+      if (/^(no|rider|horse|draw)$/i.test(flat)) continue;
+      // status badges (SCR = scratched, VET = vet failed) and other tags
+      let status = "starting";
+      if (cells.some((c) => /^(scr|vet|w\/?d)$/i.test(c)) || /\b(scratched|withdrawn)\b/i.test(flat)) status = "scratched";
+      cells = cells.filter((c) => !BADGE.test(c));
       // Entry row
       let draw = null, rider = "", horse = "", flagged = false;
       if (cols && cells.length >= 2) {
         const all = line.split("\t").map((c) => c.trim());
         const d = cols.draw >= 0 ? all[cols.draw] : all[0];
         if (/^\d{1,3}[.)]?$/.test(d || "")) { draw = d.replace(/[.)]/, ""); rider = all[cols.rider] || ""; horse = all[cols.horse] || ""; }
+      }
+      // SA Showjumping style: the draw number sits on its own line next to a "rider | horse" line
+      if (draw == null && cells.length === 1 && /^\d{1,3}$/.test(cells[0])) {
+        if (pendPair) { addEntry(cells[0], pendPair[0], pendPair[1], pendStatus); pendPair = null; pendStatus = "starting"; }
+        else pendDraw = cells[0];
+        continue;
+      }
+      if (draw == null && cells.length >= 2 && !/^\d/.test(cells[0]) && looksLikeName(cells[0]) && looksLikeName(cells[cells.length - 1]) && cells.length <= 3) {
+        if (pendDraw) { addEntry(pendDraw, cells[0], cells[cells.length - 1], status); pendDraw = null; }
+        else { pendPair = [cells[0], cells[cells.length - 1]]; pendStatus = status; }
+        continue;
       }
       if (draw == null) {
         let m = null;
@@ -394,33 +486,68 @@
         } else m = null;
         if (draw != null && m != null) {
           const parts = m.split(/\s+[-–\/|]\s+|\s{2,}|\s+on\s+/);
-          if (parts.length >= 2) { rider = parts[0].trim(); horse = parts.slice(1).join(" ").trim(); }
-          else { rider = m.trim(); flagged = true; }
+          if (parts.length >= 2 && looksLikeName(parts[0].trim())) { rider = parts[0].trim(); horse = parts.slice(1).join(" ").trim(); }
+          else if (looksLikeName(m.trim())) { rider = m.trim(); flagged = true; }
+          else draw = null;
         }
       }
-      if (draw != null && (rider || horse)) {
-        const e = makeEntry({ draw, rider, horse });
-        if (flagged || !rider || !horse) e.flags.push("Could not split rider and horse — please check");
-        cur.entries.push(e);
+      if (draw != null && (rider || horse) && (looksLikeName(rider) || looksLikeName(horse))) {
+        addEntry(draw, rider, horse, status, flagged);
         continue;
       }
       // Extra class details before the running order starts
       if (!cur.entries.length) {
-        if (!cur.start) { const t = findTime(flat); if (t) cur.start = t; else if (RE_FOLLOW.test(flat)) cur.start = "follow"; }
+        if (!cur.start) { const tr = findTimeRange(flat); if (tr) { cur.start = tr.start; cur.end = tr.end; cur.combined = false; } else { const t = findTime(flat); if (t) cur.start = t; else if (RE_FOLLOW.test(flat)) cur.start = "follow"; } }
         if (!cur.height) cur.height = findHeight(flat);
         if (!cur._fmt) { const f = normalizeFormat(flat); if (f) { cur.format = f; cur._fmt = true; } }
-        if (!cur.name && flat.length < 60) cur.name = flat;
+        if (!cur.name && flat.length < 60 && !/^\d/.test(flat)) cur.name = flat;
       }
     }
-    classes.forEach((c) => {
-      if (!c._fmt) c.flags.push("Class format not found — set to Other");
-      delete c._fmt;
-      c.flags.push("Read automatically — check rider/horse order and times");
+    // Merged timetable cells: the time is printed on the middle row of the group (e.g. 9 / 10.2 12h45–13h15 / 23).
+    // Give it to the first row of the group and mark the others as running straight on.
+    const byArena = {};
+    classes.forEach((c, i) => { (byArena[c.arena] = byArena[c.arena] || []).push(i); });
+    Object.values(byArena).forEach((idx) => {
+      const rows = idx.map((i) => classes[i]);
+      const timed = rows.map((c, k) => (c.start && c.start !== "follow" && !c._noTime ? k : -1)).filter((k) => k >= 0);
+      const taken = new Set();
+      timed.forEach((k) => {
+        let before = 0, after = 0;
+        for (let j = k - 1; j >= 0 && rows[j]._noTime && !taken.has(j); j--) before++;
+        for (let j = k + 1; j < rows.length && rows[j]._noTime && !taken.has(j); j++) after++;
+        const span = Math.min(before, after);
+        if (!span) return;
+        const first = rows[k - span];
+        first.start = rows[k].start; first.end = rows[k].end; first.combined = false; delete first._noTime; taken.add(k - span);
+        rows[k].start = ""; rows[k].end = ""; rows[k].combined = true; rows[k]._grouped = true;
+        for (let j = k - span + 1; j <= k + span; j++) { taken.add(j); if (rows[j] !== first) { rows[j].combined = true; rows[j]._grouped = true; delete rows[j]._noTime; } }
+      });
     });
-    if (!classes.length) throw new Error("We couldn't find any classes in that file. Try the AI reader, or fill in the CSV template.");
-    finishImportFlags(classes);
-    return normalizeShow({ name: (filename || "Show").replace(/\.[^.]+$/, ""), classes });
+    // A starting list for a class that's already in the timetable: put its riders into that class
+    const merged = [];
+    classes.forEach((c) => {
+      const twin = merged.find((m) => norm(m.no) === norm(c.no) && !m.entries.length && c.entries.length && !m._merged);
+      if (twin) {
+        twin.entries = c.entries; twin._merged = true;
+        if (!twin.height && c.height) twin.height = c.height;
+        if (c._comp && showName && norm(c._comp) !== norm(showName)) twin.flags.push("Running order says it's from “" + c._comp + "” — check it belongs to this show");
+        return;
+      }
+      merged.push(c);
+    });
+    merged.forEach((c) => {
+      if (!c._fmt) c.flags.push("Class format not found — set to Other");
+      if (c._noTime) c.flags.push("No time of its own — assumed to run straight on after the previous class (shared time slot?)");
+      if (c._grouped) c.flags.push("Shares a time slot with the class before it in the timetable — runs straight on");
+      if (c._comp && showName && norm(c._comp) !== norm(showName) && classes.length > 1) c.flags.push("This running order says it's from “" + c._comp + "”, not “" + showName + "” — check it belongs to this show");
+      c.flags.push("Read automatically — check rider/horse order and times");
+      delete c._fmt; delete c._noTime; delete c._comp; delete c._merged; delete c._grouped;
+    });
+    if (!merged.length) throw new Error("We couldn't find any classes in that file. Try the AI reader, or fill in the CSV template.");
+    finishImportFlags(merged);
+    return normalizeShow({ name: showName || (filename || "Show").replace(/\.[^.]+$/, ""), date: showDate || undefined, classes: merged });
   }
+
 
   // ===================================================================
   // AI reading (via your Supabase Edge Function — the AI key lives there)
@@ -433,17 +560,20 @@
       r.readAsDataURL(file);
     });
   }
-  async function readWithAI(file) {
+  async function readWithAI(fileOrFiles) {
+    const files = Array.isArray(fileOrFiles) ? fileOrFiles : [fileOrFiles];
+    const file = files[0];
     if (!aiConfigured) throw Object.assign(new Error("AI reading is not set up yet."), { code: "not_configured" });
-    if (file.size > 5 * 1024 * 1024) throw Object.assign(new Error("That file is over 5 MB, which is too big for AI reading."), { code: "too_large" });
-    const isPdf = /\.pdf$/i.test(file.name) || file.type === "application/pdf";
-    let body;
-    if (isPdf) body = { kind: "pdf", filename: file.name, data: await fileToBase64(file) };
-    else {
-      const text = (await extractExcelLines(await file.arrayBuffer())).join("\n");
-      if (text.length > 100000) throw Object.assign(new Error("That spreadsheet has too much text for AI reading (over 100,000 characters)."), { code: "too_large" });
-      body = { kind: "text", filename: file.name, text };
+    const total = files.reduce((n, f) => n + f.size, 0);
+    if (total > 5 * 1024 * 1024) throw Object.assign(new Error("Those files add up to more than 5 MB, which is too big for AI reading."), { code: "too_large" });
+    const parts = [];
+    let chars = 0;
+    for (const f of files) {
+      if (/\.pdf$/i.test(f.name) || f.type === "application/pdf") parts.push({ kind: "pdf", filename: f.name, data: await fileToBase64(f) });
+      else { const text = (await extractExcelLines(await f.arrayBuffer())).join("\n"); chars += text.length; parts.push({ kind: "text", filename: f.name, text }); }
     }
+    if (chars > 100000) throw Object.assign(new Error("Those spreadsheets have too much text for AI reading (over 100,000 characters)."), { code: "too_large" });
+    const body = parts.length === 1 ? parts[0] : { kind: "multi", files: parts };
     const token = await freshToken();
     if (!token) throw Object.assign(new Error("Please sign in again to use AI reading."), { code: "login_required" });
     const headers = { "Content-Type": "application/json", apikey: CFG.SUPABASE_ANON_KEY, Authorization: "Bearer " + token };
@@ -461,7 +591,7 @@
       const msg = (data && data.error) || "The AI reader returned an error (" + resp.status + ").";
       throw Object.assign(new Error(msg), { code });
     }
-    return aiToShow(data.show, file.name);
+    return aiToShow(data.show, file.name.replace(/\.[^.]+$/, ""));
   }
   function aiToShow(d, filename) {
     if (!d || !Array.isArray(d.classes)) throw new Error("The AI reader returned something unexpected.");
@@ -469,7 +599,8 @@
       const k = makeClass({
         arena: String(c.arena || "Arena 1").trim(), no: String(c.class_no || "").trim(), name: String(c.class_name || "").trim(),
         height: String(c.height || "").trim(), start: normTime(c.start_time) || "",
-        format: normalizeFormat(c.format) || FORMATS[5], sameCourse: !!c.same_course
+        format: normalizeFormat(c.format) || FORMATS[5], sameCourse: !!c.same_course,
+        end: normTime(c.end_time) || "", expected: Math.max(0, parseInt(c.expected_entries, 10) || 0), combined: !!c.runs_with_previous
       });
       k.flags = (c.uncertain || []).map(String);
       if (c.start_time && normTime(c.start_time) === null) k.flags.push('Start time "' + c.start_time + '" not understood');
@@ -523,18 +654,34 @@
       const list = show.classes.filter((c) => c.arena === a.name);
       const L = parseTime(a.lunchStart); const D = (+a.lunchMin || 0) * 60;
       let lunchTaken = false; let prevEnd = null;
+      // The organiser's plan: a class with a time window (e.g. 8h00–8h10), plus any classes that run on in the
+      // same slot, gives the planned time per horse. The gap to the next class's start is the planned changeover.
+      const plan = {}; let group = null;
+      list.forEach((c) => {
+        const st = parseTime(c.start), en = parseTime(c.end);
+        if (!c.combined || !group) { group = { start: st, end: en != null && st != null && en > st ? en : null, count: 0, members: [] }; }
+        group.members.push(c.id); group.count += c.entries.filter((e) => e.status !== "scratched").length || (+c.expected || 0);
+        plan[c.id] = group;
+      });
+      let prevGroup = null;
       // classes before the last class with live data are treated as finished
       let lastLive = -1;
       if (useLive) list.forEach((c, i) => { if (hasLive(c)) lastLive = i; });
       list.forEach((c, ci) => {
         const lv = useLive ? c.live : blankLive();
         const starters = c.entries.filter((e) => e.status !== "scratched");
-        const N = starters.length;
+        // no running order yet: use the number of entries from the timetable
+        const placeholder = !c.entries.length && (+c.expected || 0) > 0;
+        const N = placeholder ? +c.expected : starters.length;
         const avg = useLive ? actualAvg(c, starters) : null;
-        const spr = avg ? avg.spr : defaultSpr(c.format);
+        const g = plan[c.id];
+        const planSpr = g.end != null && g.count > 0 ? Math.min(400, Math.max(40, (g.end - g.start) / g.count)) : null;
+        const spr = avg ? avg.spr : planSpr || defaultSpr(c.format);
         const sched = parseTime(c.start);
         let cand, lunch = null;
         if (prevEnd == null) cand = sched != null ? sched : parseTime(TS.dayStart) || 8 * 3600;
+        else if (c.combined) cand = prevEnd; // shares a time slot: runs straight on, no prize-giving or course change in between
+        else if (sched != null && prevGroup && prevGroup.end != null && sched >= prevGroup.end) cand = prevEnd + (sched - prevGroup.end); // the organiser's own changeover time
         else {
           const afterPrize = prevEnd + prize;
           const walk = c.sameCourse ? 0 : walkS;
@@ -576,14 +723,15 @@
           out.ent[e.id] = { t, state, cls: c.id, actual: markAt[e.id] != null && (state === "done" || state === "now") };
           lastT = t;
         });
-        const firstEnd = N ? lastT + spr : start;
+        const firstEnd = starters.length ? lastT + spr : start + N * spr;
         let end = firstEnd, extra = null;
-        if (c.format === FORMATS[2]) { const n = Math.round(N * TS.joPct / 100); extra = { label: "Jump-off", n, start: firstEnd }; end = firstEnd + n * TS.joSec; }
-        else if (c.format === FORMATS[3]) { const n = Math.ceil(N * TS.r2Pct / 100); extra = { label: "Round 2", n, start: firstEnd }; end = firstEnd + n * spr; }
+        // (when the time comes from the organiser's window, jump-offs and second rounds are already included in it)
+        if (c.format === FORMATS[2] && !(planSpr && !avg)) { const n = Math.round(N * TS.joPct / 100); extra = { label: "Jump-off", n, start: firstEnd }; end = firstEnd + n * TS.joSec; }
+        else if (c.format === FORMATS[3] && !(planSpr && !avg)) { const n = Math.ceil(N * TS.r2Pct / 100); extra = { label: "Round 2", n, start: firstEnd }; end = firstEnd + n * spr; }
         if (lv.finishedAt != null) end = lv.finishedAt;
         else if (finished) end = Math.max(end, start);
-        out.cls[c.id] = { start, planned, end, sched, late: sched != null ? start - sched : null, spr, avg, sprDefault: defaultSpr(c.format), startSrc, finished, inProgress, extra, lunch, N, nowIdx };
-        prevEnd = end;
+        out.cls[c.id] = { start, planned, end, sched, late: sched != null ? start - sched : null, spr, avg, sprDefault: defaultSpr(c.format), startSrc, finished, inProgress, extra, lunch, N, nowIdx, placeholder, schedEnd: parseTime(c.end), planSpr };
+        prevEnd = end; prevGroup = g;
       });
     });
     return out;
@@ -738,13 +886,15 @@
   // Per-account storage on this phone, so two people sharing a phone don't see each other's show.
   function ukey(k) { return "rt." + k + "." + (session && session.user && session.user.id ? session.user.id : "anon"); }
   function loadUserData() {
-    let sh = load(ukey("show"));
-    let st = load(ukey("stars"));
-    // first sign-in on a phone that used the app before accounts existed: adopt the old show
-    if (!sh && load("rt.show")) { sh = load("rt.show"); st = st || load("rt.stars"); try { localStorage.removeItem("rt.show"); localStorage.removeItem("rt.stars"); } catch (e) { /* ignore */ } }
-    try { show = sh ? normalizeShow(sh) : null; } catch (e) { show = null; }
-    stars = Object.assign({ riders: [], horses: [] }, st || {});
-    if (show) saveShow(); saveStars();
+    show = null;
+    // older versions kept a single show: move it into the saved-shows library
+    const legacy = load(ukey("show")) || load("rt.show");
+    if (legacy) { try { const sh = normalizeShow(legacy); libPut(sh); } catch (e) { /* ignore */ } forget(ukey("show")); forget("rt.show"); }
+    if (!load(ukey("stars")) && load("rt.stars")) { store(ukey("stars"), load("rt.stars")); store(ukey("starsDirty"), true); }
+    forget("rt.stars");
+    stars = Object.assign({ riders: [], horses: [] }, load(ukey("stars")) || {});
+    const cur = load(ukey("current"));
+    if (cur) libOpen(cur);
     // re-open the live show this person was following, if any
     const cached = load(ukey("cloud"));
     if (load(ukey("active")) === "cloud" && cached && cached.cloud) {
@@ -772,6 +922,7 @@
     loadUserData();
     setView(show ? "arenas" : "load");
     if (msg) banner(esc(msg), "ok", [], 6000);
+    libSync();
     if (ui.deepShow) { openCloudShow(ui.deepShow); ui.deepShow = null; }
     else if (isCloud()) { startPolling(); pollCloud(true); flushPending(); }
   }
@@ -830,13 +981,164 @@
       const r = await dialog("Sign out?", "<p>Your show stays saved on this phone for when you sign in again.</p>", [{ label: "Cancel", value: "no" }, { label: "Sign out", value: "yes", cls: "danger" }]);
       if (r.value !== "yes") return;
       const t = session && session.access_token;
-      clearInterval(cloudUI.pollTimer); pending = { classes: {}, status: {} }; cloudUI.list = null; cloudUI.isOrganiser = null; cloudUI.request = null;
+      clearInterval(cloudUI.pollTimer); clearTimeout(lib.timer); pending = { classes: {}, status: {} }; cloudUI.list = null; cloudUI.isOrganiser = null; cloudUI.request = null;
       clearSession(); show = null; stars = { riders: [], horses: [] };
       if (t) authFetch("logout", null, "POST", t).catch(() => {});
       authMode("signin"); setView("auth");
     };
     $("#btnChangePw").onclick = () => { authMode("newpw"); setView("auth"); };
     if (CFG.CONTACT_EMAIL) { const a = $("#contactLink"); a.textContent = CFG.CONTACT_EMAIL; a.href = "mailto:" + CFG.CONTACT_EMAIL; $("#contactLine").hidden = false; }
+  }
+
+  // ===================================================================
+  // My saved shows — kept in the user's account (and on this phone for offline use)
+  // until the user deletes them. Starred riders/horses are saved the same way.
+  // ===================================================================
+  const lib = { timer: null, syncing: false, again: false, lastError: null, lastSync: null };
+  function libIndex() { return load(ukey("lib")) || []; }
+  function saveIndex(ix) { store(ukey("lib"), ix); }
+  function libCounts(sh) { return { classes: (sh.classes || []).length, entries: (sh.classes || []).reduce((n, c) => n + (c.entries || []).length, 0) }; }
+  // Save the open (own) show into the library and queue a sync.
+  function libPut(sh) {
+    if (!sh.libId) sh.libId = "s" + Date.now().toString(36) + uid();
+    sh.updatedAt = Date.now();
+    store(ukey("lib." + sh.libId), sh);
+    const ix = libIndex().filter((x) => x.id !== sh.libId);
+    const old = (load(ukey("lib")) || []).find((x) => x.id === sh.libId) || {};
+    ix.unshift(Object.assign({}, libCounts(sh), { id: sh.libId, name: sh.name || "Show", date: sh.date || "", updatedAt: sh.updatedAt, dirty: true, synced: !!old.synced }));
+    saveIndex(ix);
+    store(ukey("current"), sh.libId);
+    libSyncSoon();
+  }
+  function libOpen(id) {
+    const sh = load(ukey("lib." + id));
+    if (!sh) return false;
+    try { show = normalizeShow(sh); show.libId = id; } catch (e) { return false; }
+    store(ukey("current"), id); ui.open = {}; ui.arena = null;
+    return true;
+  }
+  function libDelete(id) {
+    forget(ukey("lib." + id));
+    const ix = libIndex().map((x) => x.id === id ? { id, deleted: true, dirty: true, synced: x.synced } : x);
+    saveIndex(ix.filter((x) => !(x.id === id && !x.synced)));   // never reached the server: just drop it
+    if (load(ukey("current")) === id) forget(ukey("current"));
+    if (show && !isCloud() && show.libId === id) show = null;
+    libSyncSoon();
+  }
+  function libSyncSoon(ms) { clearTimeout(lib.timer); lib.timer = setTimeout(libSync, ms == null ? 3000 : ms); }
+  async function libSync() {
+    if (!session) return;
+    if (lib.syncing) { lib.again = true; return; }
+    lib.syncing = true; lib.again = false;
+    try {
+      // 0. "Delete all my data" that happened while offline
+      if (load(ukey("wipe"))) {
+        await api("user_shows?user_id=eq." + session.user.id, { method: "DELETE", headers: { Prefer: "return=minimal" } });
+        await api("user_stars?user_id=eq." + session.user.id, { method: "DELETE", headers: { Prefer: "return=minimal" } });
+        forget(ukey("wipe"));
+      }
+      let ix = libIndex();
+      // 1. deletions
+      for (const x of ix.filter((y) => y.deleted)) {
+        await api("user_shows?id=eq." + encodeURIComponent(x.id), { method: "DELETE", headers: { Prefer: "return=minimal" } });
+        ix = libIndex().filter((y) => y.id !== x.id); saveIndex(ix);
+      }
+      // 2. new or changed shows
+      for (const x of libIndex().filter((y) => y.dirty && !y.deleted)) {
+        const data = load(ukey("lib." + x.id)); if (!data) continue;
+        await api("user_shows?on_conflict=id", { method: "POST", headers: { Prefer: "resolution=merge-duplicates,return=minimal" },
+          body: { id: x.id, name: (data.name || "Show").slice(0, 160), show_date: /^\d{4}-\d{2}-\d{2}$/.test(data.date || "") ? data.date : null, data, updated_at: new Date(data.updatedAt || Date.now()).toISOString() } });
+        saveIndex(libIndex().map((y) => y.id === x.id && y.updatedAt === x.updatedAt ? Object.assign({}, y, { dirty: false, synced: true }) : y));
+      }
+      // 3. bring down shows saved from other devices (or newer versions of them)
+      const rows = await api("user_shows?select=id,name,show_date,updated_at&order=updated_at.desc") || [];
+      const serverIds = new Set(rows.map((r) => r.id));
+      for (const r of rows) {
+        const local = libIndex().find((y) => y.id === r.id);
+        const serverAt = Date.parse(r.updated_at);
+        if (local && (local.deleted || local.dirty || (local.updatedAt || 0) >= serverAt)) continue;
+        const full = await api("user_shows?id=eq." + encodeURIComponent(r.id) + "&select=data");
+        if (!full || !full[0]) continue;
+        const data = full[0].data; data.libId = r.id; data.updatedAt = serverAt;
+        store(ukey("lib." + r.id), data);
+        const ix2 = libIndex().filter((y) => y.id !== r.id);
+        ix2.push(Object.assign({}, libCounts(data), { id: r.id, name: r.name, date: r.show_date || "", updatedAt: serverAt, dirty: false, synced: true }));
+        saveIndex(ix2);
+        if (show && !isCloud() && show.libId === r.id && ui.view !== "review") { libOpen(r.id); }
+      }
+      // 4. shows deleted on another device
+      const gone = libIndex().filter((y) => y.synced && !y.dirty && !y.deleted && !serverIds.has(y.id));
+      gone.forEach((y) => { forget(ukey("lib." + y.id)); if (show && !isCloud() && show.libId === y.id) show = null; });
+      if (gone.length) saveIndex(libIndex().filter((y) => !gone.some((g) => g.id === y.id)));
+      // 5. starred riders and horses
+      if (load(ukey("starsDirty"))) {
+        await api("user_stars?on_conflict=user_id", { method: "POST", headers: { Prefer: "resolution=merge-duplicates,return=minimal" }, body: { stars, updated_at: new Date(load(ukey("starsAt")) || Date.now()).toISOString() } });
+        forget(ukey("starsDirty"));
+      } else {
+        const st = await api("user_stars?select=stars,updated_at");
+        if (st && st[0] && Date.parse(st[0].updated_at) > (load(ukey("starsAt")) || 0)) {
+          stars = Object.assign({ riders: [], horses: [] }, st[0].stars || {});
+          store(ukey("stars"), stars); store(ukey("starsAt"), Date.parse(st[0].updated_at));
+        }
+      }
+      lib.lastError = null; lib.lastSync = Date.now();
+    } catch (e) {
+      lib.lastError = e.code === "network" ? "offline" : e.message;
+      if (/too_many_saved_shows/.test(e.message)) banner("You have 100 saved shows, the maximum. Delete some old ones to save more.", "err", [], 8000);
+      libSyncSoon(60000);
+    } finally {
+      lib.syncing = false;
+      if (lib.again) libSyncSoon(500);
+      const typing = document.activeElement && /INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName);
+      if (!typing && !$("#dlg").open && (ui.view === "load" || ui.view === "mine" || ui.view === "settings" || (ui.view === "arenas" && show))) render();
+      else if (ui.view === "load") renderLoad();
+    }
+  }
+  function libStatusText() {
+    const waiting = libIndex().some((x) => x.dirty) || !!load(ukey("starsDirty"));
+    if (lib.lastError === "offline" || (waiting && navigator.onLine === false)) return "Saved on this phone · will sync to your account when you're online";
+    if (lib.lastError) return "Saved on this phone · couldn't sync just now (" + lib.lastError + ")";
+    if (waiting) return "Saving to your account…";
+    return "Saved in your account · available on any device you sign in to";
+  }
+
+  // ===================================================================
+  // Deleting data from this phone
+  // ===================================================================
+  function forget(key) { try { localStorage.removeItem(key); } catch (e) { /* ignore */ } }
+  async function deleteThisShow() {
+    if (!show) return;
+    if (isCloud()) {
+      const owner = role() === "owner";
+      const r = await dialog("Stop following and delete?", "<p>This deletes the copy of <strong>" + esc(show.name) + "</strong> on this phone.</p>" +
+        (owner ? "<p>The <strong>published live show stays online</strong> for everyone. To take it down, use <em>Remove live show</em> on the Live tab.</p>" : "<p>The live show itself isn't affected. You can follow it again from the Live tab.</p>"),
+        [{ label: "Cancel", value: "no" }, { label: "Delete from this phone", value: "yes", cls: "danger" }]);
+      if (r.value !== "yes") return;
+      leaveCloud(); setView(show ? "arenas" : "load");
+      banner("Deleted from this phone.", "ok", [], 5000); return;
+    }
+    const r = await dialog("Delete this show?", "<p>This permanently deletes <strong>" + esc(show.name) + "</strong>, including your live updates, from your account and every device. It can't be undone.</p><p class=\"small muted\">Tip: download a backup first (Settings → Export) if you might need it again.</p>",
+      [{ label: "Cancel", value: "no" }, { label: "Delete show", value: "yes", cls: "danger" }]);
+    if (r.value !== "yes") return;
+    libDelete(show.libId); show = null; ui.open = {}; ui.arena = null;
+    setView("load"); banner("Show deleted from your account and this phone.", "ok", [], 5000);
+  }
+  async function deleteAllMyData() {
+    const r = await dialog("Delete all your data on this phone?", "<p>This permanently deletes <strong>all your saved shows</strong> and your <strong>starred riders and horses</strong> from your account and every device, plus any live-show copies on this phone. You'll stay signed in, and your timing settings are kept.</p>" +
+      "<p class=\"small muted\">This can't be undone. Live shows you've published stay online until you remove them on the Live tab (or they expire 7 days after the show).</p>",
+      [{ label: "Cancel", value: "no" }, { label: "Delete everything", value: "yes", cls: "danger" }]);
+    if (r.value !== "yes") return;
+    clearInterval(cloudUI.pollTimer); clearTimeout(cloudUI.schedTimer); cloudUI.schedTimer = null;
+    const uid = session && session.user && session.user.id;
+    try {
+      const keys = [];
+      for (let i = 0; i < localStorage.length; i++) keys.push(localStorage.key(i));
+      keys.forEach((k) => { if (k === "rt.show" || k === "rt.stars" || (uid && k.startsWith("rt.") && k.endsWith("." + uid)) || (uid && /^rt\.pending\./.test(k) && k.endsWith("." + uid))) forget(k); });
+    } catch (e) { /* storage unavailable */ }
+    store(ukey("wipe"), true);
+    show = null; stars = { riders: [], horses: [] }; pending = { classes: {}, status: {} }; ui.open = {}; ui.arena = null;
+    setView("load"); banner("All your saved shows and riders have been deleted.", "ok", [], 6000);
+    libSync();
   }
 
   // ===================================================================
@@ -1061,7 +1363,7 @@
       pending = { classes: {}, status: {} };
       show = buildCloudShow(full[0], "owner"); cloudUI.code = res.code;
       store(ukey("active"), "cloud"); saveShow(); startPolling();
-      setView("live");
+      cloudUI.list = null; setView("live");
       showCodeDialog(res.code);
     } catch (e) { banner("Couldn't publish: " + esc(e.message), "err", [], 8000); }
     finally { busy(false); }
@@ -1090,13 +1392,20 @@
     } catch (e) { banner(esc(e.message), "err", [], 8000); }
     finally { busy(false); }
   }
+  // Stop following a live show and delete this phone's copy of it (and any unsent updates).
   function leaveCloud() {
     clearInterval(cloudUI.pollTimer); clearTimeout(cloudUI.schedTimer); cloudUI.schedTimer = null;
+    if (isCloud()) { forget(ukey("pending." + show.cloud.id)); }
+    forget(ukey("cloud")); pending = { classes: {}, status: {} };
     store(ukey("active"), "local");
-    let sh = load(ukey("show"));
-    try { show = sh ? normalizeShow(sh) : null; } catch (e) { show = null; }
+    show = null; const cur = load(ukey("current")); if (cur) libOpen(cur);
     ui.open = {}; ui.arena = null;
     setView(show ? "live" : "load");
+  }
+  function leaveCloudQuiet() {
+    clearInterval(cloudUI.pollTimer); clearTimeout(cloudUI.schedTimer); cloudUI.schedTimer = null;
+    if (isCloud()) forget(ukey("pending." + show.cloud.id));
+    forget(ukey("cloud")); pending = { classes: {}, status: {} }; store(ukey("active"), "local"); show = null;
   }
   async function joinMarshal() {
     const r = await dialog("I'm a marshal", '<p>Enter the marshal code the show publisher gave you.</p><label>Marshal code<input name="code" autocomplete="off" autocapitalize="characters" maxlength="12" style="font-size:1.4rem;letter-spacing:.15em;text-transform:uppercase"></label>',
@@ -1292,7 +1601,15 @@
         case "marshal": setView("marshal"); break;
         case "arenas": setView("arenas"); break;
         case "join": joinMarshal(); break;
-        case "leave": leaveCloud(); break;
+        case "leave": {
+          const n = pendingCount() + (cloudUI.schedTimer ? 1 : 0);
+          if (n) {
+            const r = await dialog("Updates not sent yet", "<p>" + n + " update" + (n > 1 ? "s haven't" : " hasn't") + " reached the server yet (no signal?). If you stop following now, " + (n > 1 ? "they" : "it") + " will be lost.</p>",
+              [{ label: "Keep following", value: "no" }, { label: "Stop anyway", value: "yes", cls: "danger" }]);
+            if (r.value !== "yes") break;
+          }
+          leaveCloud(); banner("Stopped following. The copy on this phone has been deleted.", "ok", [], 5000); break;
+        }
         case "remove": removeShow(); break;
         case "newcode": newCode(); break;
         case "showcode": try { cloudUI.code = await rpc("rt_get_code", { p_show: show.cloud.id }); renderLive(); } catch (e) { banner(esc(e.message), "err", [], 6000); } break;
@@ -1305,7 +1622,7 @@
     });
     $("#marshalBody").addEventListener("click", onMarshalClick);
     $("#marshalBody").addEventListener("change", (ev) => { if (ev.target.id === "mClass") { ui.mClass = ev.target.value; renderMarshal(); } });
-    window.addEventListener("online", () => { flushPending(); pollCloud(true); });
+    window.addEventListener("online", () => { flushPending(); pollCloud(true); libSyncSoon(500); });
     document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") { pollCloud(false); flushPending(); } });
   }
 
@@ -1419,9 +1736,11 @@
 
   // ---------- Load ----------
   function renderLoad() {
-    const saved = load(ukey("show"));
-    if (saved) $("#resumeText").textContent = saved.name + " · " + (saved.classes || []).length + " classes";
-    $("#resumeCard").hidden = !saved;
+    const ix = libIndex().filter((x) => !x.deleted).sort((a, b) => (b.date || "").localeCompare(a.date || "") || b.updatedAt - a.updatedAt);
+    $("#libCard").hidden = !ix.length;
+    $("#libStatus").textContent = libStatusText();
+    const curId = show && !isCloud() ? show.libId : null;
+    $("#libList").innerHTML = ix.map((x) => '<div class="lib-item' + (x.id === curId ? " current" : "") + '"><button type="button" class="lib-open" data-libopen="' + esc(x.id) + '"><strong>' + esc(x.name) + '</strong><span class="muted small">' + esc(x.date || "No date") + " · " + (x.classes || 0) + " classes · " + (x.entries || 0) + " entries" + (x.id === curId ? " · open now" : "") + (x.dirty ? " · not synced yet" : "") + '</span></button><button type="button" class="icon-btn" data-libdel="' + esc(x.id) + '" aria-label="Delete ' + esc(x.name) + '">🗑</button></div>').join("");
     $("#btnReadAI").hidden = !aiConfigured;
     $("#aiPrivacy").hidden = !aiConfigured;
   }
@@ -1469,13 +1788,15 @@
       if (r.late != null && r.late >= 120 && !r.finished) badges.push('<span class="badge late">~' + fmtMins(r.late) + " later than scheduled " + fmt(r.sched) + "</span>");
       if (r.late != null && r.late <= -120 && !r.finished) badges.push('<span class="badge early">~' + fmtMins(r.late) + " earlier than " + fmt(r.sched) + "</span>");
       if (c.sameCourse) badges.push('<span class="badge">Same course, height raised</span>');
+      if (c.combined) badges.push('<span class="badge">Runs straight on</span>');
+      if (r.placeholder) badges.push('<span class="badge warn">Running order not loaded · ' + r.N + " expected</span>");
       const scratched = c.entries.length - r.N;
       html += '<details class="klass' + (r.inProgress ? " live" : "") + (r.finished ? " finished" : "") + '" data-cls="' + c.id + '"' + (open ? " open" : "") + ">";
       html += '<summary><div class="k-top"><div class="k-title">Class ' + esc(c.no) + (c.height ? " · " + esc(c.height) : "") + '</div><div class="k-times">' + fmt(r.start) + "–" + fmt(r.end) + "</div></div>";
-      html += '<div class="k-meta">' + esc(c.name || "") + (c.name ? " · " : "") + esc(SHORT[c.format]) + " · " + r.N + " starting" + (scratched ? " (" + scratched + " scratched)" : "") + (r.sched != null ? " · scheduled " + fmt(r.sched) : "") + "</div>";
+      html += '<div class="k-meta">' + esc(c.name || "") + (c.name ? " · " : "") + esc(SHORT[c.format]) + " · " + r.N + " starting" + (scratched ? " (" + scratched + " scratched)" : "") + (r.sched != null ? " · scheduled " + fmt(r.sched) + (r.schedEnd != null ? "–" + fmt(r.schedEnd) : "") : "") + "</div>";
       html += '<div class="badges">' + badges.join("") + "</div></summary>";
       // live bar
-      const sprInfo = r.avg ? "Using real average " + fmtDur(r.avg.spr) + " per round (from " + r.avg.n + " rounds)" : "Using default " + fmtDur(r.sprDefault) + " per round" + (r.startSrc === "actual" ? " · started " + fmt(c.live.startedAt) : "");
+      const sprInfo = r.avg ? "Using real average " + fmtDur(r.avg.spr) + " per round (from " + r.avg.n + " rounds)" : r.planSpr ? "Using the timetable's plan: " + fmtDur(r.planSpr) + " per horse" : "Using default " + fmtDur(r.sprDefault) + " per round" + (r.startSrc === "actual" ? " · started " + fmt(c.live.startedAt) : "");
       if (canEdit()) html += '<div class="live-bar"><div class="now-in"><label>Now jumping #<input type="text" inputmode="numeric" enterkeyhint="go" data-now="' + c.id + '" placeholder="draw"></label><button type="button" class="btn small primary" data-act="go" data-cls="' + c.id + '">Go</button><button type="button" class="btn small" data-act="next" data-cls="' + c.id + '">Next ▸</button></div>' +
         '<button type="button" class="btn small" data-act="started" data-cls="' + c.id + '">Started</button><button type="button" class="btn small" data-act="finished" data-cls="' + c.id + '">Finished</button>' +
         '<div class="info">' + sprInfo + (hasLive(c) ? ' · <button type="button" class="btn small" data-act="resetlive" data-cls="' + c.id + '">Clear live</button>' : "") + "</div></div>";
@@ -1490,6 +1811,7 @@
           '<span class="t">' + (er.state === "scratched" ? "scratched" : fmt(er.t)) + (cd ? "<small>" + cd + "</small>" : "") + "</span></li>";
       });
       html += "</ul>";
+      if (r.placeholder) html += '<div class="extra-row"><span>Running order not published yet — times assume ' + r.N + ' entries. Add the starting list on the Load screen when it\'s out.</span></div>';
       if (r.extra && r.extra.n > 0) html += '<div class="extra-row"><span>' + r.extra.label + " (est. " + r.extra.n + " riders)</span><b>~" + fmt(r.extra.start) + "</b></div>";
       html += '<div class="extra-row"><span>Estimated finish incl. ' + (r.extra ? r.extra.label.toLowerCase() : "last round") + "</span><b>~" + fmt(r.end) + "</b></div>";
       html += "</details>";
@@ -1551,7 +1873,10 @@
       html += '<div class="rv-head"><label>Class no.<input data-f="no" value="' + esc(c.no) + '"></label><label>Class name<input data-f="name" value="' + esc(c.name) + '"></label></div>';
       html += '<div class="rv-grid"><label>Arena<input data-f="arena" list="arenaNames" value="' + esc(c.arena) + '"></label><label>Height<input data-f="height" value="' + esc(c.height) + '" placeholder="1.10m"></label>' +
         '<label>Start time<input data-f="start" value="' + esc(c.start) + '" placeholder="08:00 or follow"></label><label>Format<select data-f="format">' + FORMATS.map((f) => "<option" + (f === c.format ? " selected" : "") + ">" + esc(f) + "</option>").join("") + "</select></label>" +
-        '<label class="wide"><input type="checkbox" data-f="sameCourse"' + (c.sameCourse ? " checked" : "") + '>Same course as previous class, height raised (' + S.changeSameMin + " min change, no walk)</label></div>";
+        '<label>Expected entries<input type="number" min="0" max="300" inputmode="numeric" data-f="expected" value="' + esc(c.expected || "") + '" placeholder="if no running order"></label>' +
+        '<label>Scheduled end<input data-f="end" value="' + esc(c.end || "") + '" placeholder="optional"></label>' +
+        '<label class="wide"><input type="checkbox" data-f="sameCourse"' + (c.sameCourse ? " checked" : "") + '>Same course as previous class, height raised (' + S.changeSameMin + " min change, no walk)</label>" +
+        '<label class="wide"><input type="checkbox" data-f="combined"' + (c.combined ? " checked" : "") + ">Runs straight on from the previous class (shared time slot, no break)</label></div>";
       if (c.flags.length) html += '<div class="flags"><ul>' + c.flags.map((f) => "<li>" + esc(f) + "</li>").join("") + '</ul><button type="button" class="btn small" data-rv="clearflags">Mark as checked</button></div>';
       html += '<div class="rv-tools"><button type="button" class="btn small" data-rv="up"' + (ci === 0 ? " disabled" : "") + '>↑ Move class</button><button type="button" class="btn small" data-rv="down"' + (ci === show.classes.length - 1 ? " disabled" : "") + '>↓ Move class</button>' +
         '<button type="button" class="btn small" data-rv="swap">Swap rider ↔ horse</button><button type="button" class="btn small danger" data-rv="delclass">Delete class</button></div>';
@@ -1579,6 +1904,8 @@
       '<p class="muted small">Leave blank for no lunch break. The break is taken after the class that is running when lunch time arrives.</p>';
     $("#btnShare").hidden = !(navigator.canShare && window.File);
     $("#acctEmail").textContent = (session && session.user && session.user.email) || "";
+    $("#btnDeleteShow").textContent = isCloud() ? "Stop following & delete from this phone" : "Delete this show";
+    $("#libStatus2").textContent = libStatusText();
     const cn = $("#cloudNote"); cn.hidden = !(isCloud() && role() !== "owner");
     cn.textContent = "For this live show, estimated times use the publisher's timing settings so everyone sees the same times. Changes here only apply to your own shows.";
   }
@@ -1587,7 +1914,8 @@
   // Loading a show
   // ===================================================================
   function useShow(sh, toReview) {
-    show = sh; ui.open = {}; ui.arena = null;
+    if (isCloud()) { clearInterval(cloudUI.pollTimer); clearTimeout(cloudUI.schedTimer); cloudUI.schedTimer = null; store(ukey("active"), "local"); }
+    delete sh.libId; show = sh; ui.open = {}; ui.arena = null;
     saveShow();
     const flags = show.classes.reduce((n, c) => n + c.flags.length + c.entries.filter((e) => e.flags.length).length, 0);
     setView(toReview ? "review" : "arenas");
@@ -1607,21 +1935,25 @@
     useShow(csvToShow(text, file.name), true);
   }
   async function readLocal() {
-    const f = ui.docFile; if (!f) return;
-    busy(true, "Reading " + f.name + "…");
+    const files = ui.docFiles || []; if (!files.length) return;
+    busy(true, "Reading " + (files.length > 1 ? files.length + " files" : files[0].name) + "…");
     try {
-      const buf = await f.arrayBuffer();
-      const lines = /\.pdf$/i.test(f.name) || f.type === "application/pdf" ? await extractPdfLines(buf) : await extractExcelLines(buf);
-      useShow(linesToShow(lines, f.name), true);
+      let lines = [];
+      for (const f of files) {
+        const buf = await f.arrayBuffer();
+        if (lines.length) lines.push("=== NEXT DOCUMENT ===");
+        lines = lines.concat(/\.pdf$/i.test(f.name) || f.type === "application/pdf" ? await extractPdfLines(buf) : await extractExcelLines(buf));
+      }
+      await importResult(linesToShow(lines, files[0].name));
     } catch (e) {
       const offline = /Could not load/.test(e.message);
       banner(esc(offline ? "The reader needs a connection the first time it's used. Try again when you have signal, or use the CSV template." : e.message), "err", [{ label: "Download CSV template", fn: downloadTemplate }]);
     } finally { busy(false); }
   }
   async function readAI() {
-    const f = ui.docFile; if (!f) return;
+    const files = ui.docFiles || []; if (!files.length) return;
     busy(true, "Reading with AI… this can take up to a minute");
-    try { useShow(await readWithAI(f), true); }
+    try { const sh = await readWithAI(files); busy(false); await importResult(sh); }
     catch (e) {
       const limited = /rate_limit/.test(e.code || "");
       const msg = limited
@@ -1630,6 +1962,42 @@
       if (e.code === "login_required") { banner("Your sign-in has expired. Please sign in again, then retry.", "err", [{ label: "Sign in", fn: () => { hideBanner(); clearSession(); setView("auth"); }, primary: true }]); return; }
       banner(msg, limited ? "" : "err", [{ label: "Read on this phone", fn: () => { hideBanner(); readLocal(); }, primary: true }, { label: "CSV template", fn: downloadTemplate }]);
     } finally { busy(false); }
+  }
+  // After reading a schedule: if the person already has a show open, offer to add these running orders to it.
+  async function importResult(sh) {
+    const withEntries = sh.classes.filter((c) => c.entries.length);
+    const base = show && !isCloud() ? show : null;
+    if (base && withEntries.length) {
+      const matches = withEntries.filter((c) => base.classes.some((b) => norm(b.no) === norm(c.no))).length;
+      const r = await dialog("Add to “" + base.name + "”?", "<p>This file has running orders for " + withEntries.length + " class" + (withEntries.length > 1 ? "es" : "") + (matches ? " (" + matches + " match class numbers in your current show)" : "") + ".</p><p>Add them to <strong>" + esc(base.name) + "</strong>, or save this as a separate new show?</p>",
+        [{ label: "New show", value: "new" }, { label: "Add to current show", value: "add", cls: "primary" }]);
+      if (r.value === "add") { mergeInto(base, sh); return; }
+    }
+    useShow(sh, true);
+  }
+  function mergeInto(base, sh) {
+    let filled = 0, added = 0;
+    sh.classes.forEach((c) => {
+      if (!c.entries.length) return;
+      const cands = base.classes.filter((b) => norm(b.no) === norm(c.no));
+      const target = cands.find((b) => norm(b.arena) === norm(c.arena)) || cands.find((b) => !b.entries.length) || cands[0];
+      if (target) {
+        target.entries = c.entries.map((e) => makeEntry({ draw: e.draw, rider: e.rider, horse: e.horse, status: e.status, flags: e.flags }));
+        target.live = blankLive();
+        if (!target.height && c.height) target.height = c.height;
+        target.flags = target.flags.filter((f) => !/running order/i.test(f)).concat(["Running order added (" + c.entries.length + " entries) — please check"]);
+        if (target.expected && Math.abs(target.expected - c.entries.length) > 2) target.flags.push("Timetable said " + target.expected + " entries, running order has " + c.entries.length);
+        filled++;
+      } else {
+        const nc = makeClass(Object.assign({}, c, { id: uid(), live: blankLive(), flags: c.flags.concat(["Not in your timetable — added at the end of " + c.arena + ". Check it belongs to this show."]) }));
+        const lastIdx = base.classes.map((b) => b.arena).lastIndexOf(c.arena);
+        if (lastIdx >= 0) base.classes.splice(lastIdx + 1, 0, nc); else base.classes.push(nc);
+        added++;
+      }
+    });
+    syncArenas(base); show = base; saveShow();
+    setView("review");
+    banner("Added running orders to " + filled + " class" + (filled === 1 ? "" : "es") + (added ? ", plus " + added + " class" + (added === 1 ? "" : "es") + " that weren't in your timetable (amber)" : "") + ".", added ? "" : "ok", [], 9000);
   }
   function downloadTemplate() { download("ringside-timer-template.csv", CSV_COLS.join(",") + "\r\n", "text/csv"); }
   async function loadSample() {
@@ -1657,18 +2025,31 @@
     $("#tabbar").addEventListener("click", (ev) => { const b = ev.target.closest("button[data-view]"); if (b) setView(b.dataset.view); });
     $("#btnTemplate").onclick = downloadTemplate;
     $("#btnPlanPrint").onclick = printPlan;
+    $("#btnDeleteShow").onclick = deleteThisShow;
+    $("#btnDeleteAll").onclick = deleteAllMyData;
+    $("#libList").addEventListener("click", async (ev) => {
+      const o = ev.target.closest("[data-libopen]"), d = ev.target.closest("[data-libdel]");
+      if (o) { if (isCloud()) leaveCloudQuiet(); if (libOpen(o.dataset.libopen)) setView("arenas"); else banner("That show isn't on this phone yet. Try again when you have signal.", "err", [], 6000); }
+      if (d) {
+        const x = libIndex().find((y) => y.id === d.dataset.libdel); if (!x) return;
+        const r = await dialog("Delete “" + x.name + "”?", "<p>This permanently deletes it from your account and every device. It can't be undone.</p>", [{ label: "Cancel", value: "no" }, { label: "Delete", value: "yes", cls: "danger" }]);
+        if (r.value === "yes") { libDelete(x.id); renderLoad(); banner("Deleted.", "ok", [], 4000); }
+      }
+    });
     $("#btnPlanWA").onclick = sendPlanWhatsApp;
     $("#btnPlanCopy").onclick = copyPlan;
     $("#btnSample").onclick = loadSample;
-    $("#btnResume").onclick = () => { show = normalizeShow(load(ukey("show"))); setView("arenas"); };
+
     $("#fileCsv").onchange = async (ev) => {
       const f = ev.target.files[0]; ev.target.value = ""; if (!f) return;
       try { await handleCsvFile(f); } catch (e) { banner(esc(e.message), "err", [{ label: "Download CSV template", fn: downloadTemplate }]); }
     };
     $("#fileDoc").onchange = (ev) => {
-      const f = ev.target.files[0]; ev.target.value = ""; if (!f) return;
-      if (/\.csv$/i.test(f.name) || /\.json$/i.test(f.name)) { handleCsvFile(f).catch((e) => banner(esc(e.message), "err")); return; }
-      ui.docFile = f; $("#docName").textContent = f.name + " (" + Math.round(f.size / 1024) + " KB)";
+      const files = Array.from(ev.target.files || []); ev.target.value = ""; if (!files.length) return;
+      if (files.length === 1 && (/\.csv$/i.test(files[0].name) || /\.json$/i.test(files[0].name))) { handleCsvFile(files[0]).catch((e) => banner(esc(e.message), "err")); return; }
+      const docs = files.filter((f) => !/\.(csv|json)$/i.test(f.name));
+      ui.docFiles = docs;
+      $("#docName").textContent = docs.map((f) => f.name).join(", ") + " (" + Math.round(docs.reduce((n, f) => n + f.size, 0) / 1024) + " KB)";
       $("#docChoice").hidden = false; renderLoad();
     };
     $("#btnReadLocal").onclick = readLocal;
@@ -1782,6 +2163,9 @@
     if (i.dataset.f) {
       const f = i.dataset.f;
       if (f === "sameCourse") c.sameCourse = i.checked;
+      else if (f === "combined") c.combined = i.checked;
+      else if (f === "expected") c.expected = Math.max(0, parseInt(i.value, 10) || 0);
+      else if (f === "end") { if (ev.type !== "change") return; const t = normTime(i.value); c.end = t && t !== "follow" ? t : ""; i.value = c.end; }
       else if (f === "start") {
         if (ev.type !== "change") return;
         const t = normTime(i.value);
@@ -1818,6 +2202,7 @@
       setView(show ? "arenas" : "load"); if (redirect) banner("Your email is confirmed — welcome!", "ok", [], 6000);
       if (ui.deepShow) { openCloudShow(ui.deepShow); ui.deepShow = null; }
       else if (isCloud()) { startPolling(); pollCloud(true); flushPending(); }
+      libSync();
     }
     else { setView("auth"); authMode("signin"); }
     if (session && navigator.onLine !== false) {
@@ -1831,7 +2216,13 @@
       if (session && session.expires_at - 300 < Date.now() / 1000) freshToken();
     }, 20000);
     if ("serviceWorker" in navigator && /^https?:/.test(location.protocol)) {
-      navigator.serviceWorker.register("sw.js").catch(() => { /* offline support unavailable */ });
+      const hadController = !!navigator.serviceWorker.controller;
+      navigator.serviceWorker.register("sw.js").then((reg) => { if (reg && reg.update) setInterval(() => reg.update().catch(() => {}), 30 * 60000); }).catch(() => { /* offline support unavailable */ });
+      navigator.serviceWorker.addEventListener("controllerchange", () => {
+        if (!hadController || ui.reloadOffered) return;
+        ui.reloadOffered = true;
+        banner("A new version of Ringside Timer is ready.", "ok", [{ label: "Update now", primary: true, fn: () => location.reload() }]);
+      });
     }
   }
   // expose a tiny hook for automated tests (no secrets here)

@@ -107,6 +107,9 @@ Shape (shown spaced out here only for readability):
       "height": string,             // e.g. "1.10m" ("" if not given)
       "format": one of ${JSON.stringify(FORMATS)},
       "start_time": "HH:MM" (24-hour) or "follow" or "",
+      "end_time": "HH:MM",          // include ONLY if the timetable gives a time window (e.g. "8h00 - 8h10" -> end "08:10")
+      "expected_entries": number,   // include ONLY when the timetable gives the number of entries but there is no running order
+      "runs_with_previous": true,   // include ONLY if this class shares one time slot with the class before it (see rules)
       "same_course": true,          // include ONLY if the schedule says the same course is used with the height raised
       "entries": [ [draw, rider, horse] ],   // one compact array per entry, all strings, e.g. ["4","Anna Botha","Silver Moon"]
                                              // add a 4th item "S" if scratched/withdrawn, or "D" if already jumped
@@ -115,13 +118,29 @@ Shape (shown spaced out here only for readability):
   ]
 }
 Rules:
+- The input may be several documents (or one merged PDF): a timetable, show information pages, and starting lists /
+  running orders for individual classes. Build ONE schedule: take class order, arena and times from the timetable,
+  and put each starting list's riders into the matching timetable class (match by class number, else height + type).
+  A starting list for a class that is not in the timetable becomes its own class, with a note in "uncertain".
+- Ignore show information that isn't the schedule: banking details, terms, prizes, catering, weather, contacts, legends.
+- Timetables often list the NUMBER of entries per class instead of names: put it in "expected_entries" and leave entries empty.
+- Merged timetable cells: when one time window covers several class rows, give the time to the FIRST class of the group
+  and set "runs_with_previous": true on the others in that group.
+- Class numbers can be decimals or have letters (e.g. "1.2", "10.2", "12a"): copy them exactly.
+- Heights can be combined, e.g. "1.25m/1.20m" or "60cm/50cm": copy as written (without grade letters like J/AD).
+- A starting list may split one class into height sections (e.g. "1.10M J/AD" then "1.00M J/AD"): keep all riders in that
+  one class, in draw order.
+- Ignore breeding/owner lines under horse names (e.g. "gelding / 7Yr / Sire x Dam / Owner") and badges like "Stallion".
+- "A2", "Table A2", "238.2.1" = "Speed / Table A against the clock"; "A1" / not against the clock / "Clear Round" = "Other".
+- If a starting list names a different show or venue than the timetable, add a note in "uncertain".
+- If the same class number appears twice in an arena, keep both and add a note in "uncertain".
 - Keep classes in the order they run within each arena.
 - start_time: "follow" when the schedule says "to follow", "thereafter", "after class X" etc.
 - Format mapping: Table A against the clock / Art 238.2.1 / Table C / speed -> "Speed / Table A against the clock";
   two-phase / Art 274.5 -> "Two-phase"; jump-off / Art 238.2.2 / immediate jump-off -> "Jump-off (Table A with jump-off)";
   two rounds / Art 273 -> "Two rounds"; accumulator / Art 269 -> "Accumulator"; anything else -> "Other".
 - Entries: keep the running order (draw) order. Rider is the person, horse is the animal. If a running order is not given for a class, use an empty list.
-- Mark entries shown as withdrawn/scratched/W/D with "S" as the 4th item.
+- Mark entries shown as withdrawn/scratched/SCR/W/D/VET (vet failed) with "S" as the 4th item.
 - Never invent riders, horses or times. If something is unclear, make your best reading and add a note to "uncertain".`;
 
 type AnyObj = Record<string, unknown>;
@@ -168,6 +187,9 @@ function validate(d: unknown): { ok: true; value: AnyObj } | { ok: false; error:
       height: String(c.height ?? "").slice(0, 20),
       format,
       start_time: start,
+      end_time: /^([01]\d|2[0-3]):[0-5]\d$/.test(String(c.end_time ?? "")) ? String(c.end_time) : "",
+      expected_entries: Math.max(0, Math.min(500, Math.round(Number(c.expected_entries) || 0))),
+      runs_with_previous: c.runs_with_previous === true,
       same_course: c.same_course === true,
       entries,
       uncertain,
@@ -248,8 +270,26 @@ Deno.serve(async (req: Request) => {
     if (!text.trim()) return reply(origin, 400, { ok: false, code: "bad_request", error: "The spreadsheet looks empty." });
     if (text.length > MAX_TEXT_CHARS) return reply(origin, 413, { ok: false, code: "too_large", error: "That spreadsheet has too much text for AI reading (over 100,000 characters)." });
     content = [{ type: "text", text: "Convert this show schedule / running order (exported from a spreadsheet, cells separated by tabs) to the JSON format described. Return only JSON.\n\n<schedule>\n" + text + "\n</schedule>" }];
+  } else if (kind === "multi" && Array.isArray(body.files) && body.files.length >= 1 && body.files.length <= 10) {
+    // Several documents at once (e.g. timetable + starting lists): one content block each, then the instruction.
+    content = [];
+    let bytes = 0, chars = 0;
+    for (const f of body.files as AnyObj[]) {
+      if (f.kind === "pdf") {
+        const data = String(f.data ?? "");
+        if (!data || !/^[A-Za-z0-9+/=\s]+$/.test(data)) return reply(origin, 400, { ok: false, code: "bad_request", error: "One of the PDFs could not be read." });
+        bytes += Math.floor(data.length * 3 / 4);
+        content.push({ type: "document", source: { type: "base64", media_type: "application/pdf", data } });
+      } else if (f.kind === "text") {
+        const text = String(f.text ?? ""); chars += text.length;
+        content.push({ type: "text", text: "<spreadsheet name=\"" + String(f.filename ?? "").slice(0, 80).replace(/[<>"]/g, "") + "\">\n" + text + "\n</spreadsheet>" });
+      } else return reply(origin, 400, { ok: false, code: "bad_request", error: "Unknown file type." });
+    }
+    if (bytes > MAX_FILE_BYTES) return reply(origin, 413, { ok: false, code: "too_large", error: "Those files add up to more than 5 MB, which is too big for AI reading." });
+    if (chars > MAX_TEXT_CHARS) return reply(origin, 413, { ok: false, code: "too_large", error: "Those spreadsheets have too much text for AI reading (over 100,000 characters)." });
+    content.push({ type: "text", text: "These documents belong to one show. Combine them into the JSON format described. Return only JSON." });
   } else {
-    return reply(origin, 400, { ok: false, code: "bad_request", error: 'Unknown request type (expected "pdf" or "text").' });
+    return reply(origin, 400, { ok: false, code: "bad_request", error: 'Unknown request type (expected "pdf", "text" or "multi").' });
   }
 
   const db = createClient(Deno.env.get("SUPABASE_URL")!, serverKey(), { auth: { persistSession: false } });

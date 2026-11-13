@@ -78,7 +78,7 @@
         <div class="card privacy small">
           <h3>Privacy</h3>
           <p>To sign in, we store your email address and a securely scrambled (hashed) version of your password with our service provider, Supabase. We use your email only to let you sign in and reset your password; we don't share or sell it.</p>
-          <p>Your own shows and starred riders are saved only on your own phone. Live shows that organisers publish (with riders' and horses' names) are stored online so everyone can follow them, and are deleted automatically 7 days after the show. If you use "Read schedule with AI", the file is sent to an AI service (outside South Africa) to be processed and is not stored.</p>
+          <p>Your processed shows and starred riders are saved in your account, visible only to you, until you delete them. Live shows that organisers publish (with riders' and horses' names) are stored online so everyone can follow them, and are deleted automatically 7 days after the show. If you use "Read schedule with AI", the file is sent to an AI service (outside South Africa) to be processed and is not stored.</p>
           <p id="contactLine" hidden>To see, correct or delete your account details, contact <a id="contactLink" href="#"></a>.</p>
         </div>
       </div>
@@ -86,7 +86,13 @@
 
     <!-- LOAD -->
     <section id="view-load" class="view" hidden>
-      <h2>Load a show</h2>
+      <h2>Your shows</h2>
+      <div class="card" id="libCard" hidden>
+        <h3>My saved shows</h3>
+        <p class="muted small" id="libStatus"></p>
+        <div id="libList"></div>
+      </div>
+      <h2>Load a new show</h2>
       <div class="card">
         <h3>1. Spreadsheet (CSV)</h3>
         <p class="muted">Most reliable. Fill in the template, one row per horse.</p>
@@ -97,8 +103,8 @@
       </div>
       <div class="card">
         <h3>2. Show schedule (PDF or Excel)</h3>
-        <p class="muted">We'll read it and show you the result to check.</p>
-        <label class="btn primary file-btn">Choose PDF or Excel<input type="file" id="fileDoc" accept=".pdf,.xlsx,.xls,.ods,application/pdf"></label>
+        <p class="muted">We'll read it and show you the result to check. You can pick several files at once (for example the timetable plus starting lists), or add starting lists to your show later.</p>
+        <label class="btn primary file-btn">Choose PDF or Excel<input type="file" id="fileDoc" accept=".pdf,.xlsx,.xls,.ods,application/pdf" multiple></label>
         <div id="docChoice" class="doc-choice" hidden>
           <p><strong id="docName"></strong></p>
           <div class="row-btns">
@@ -116,11 +122,6 @@
         <h3>Follow a live show</h3>
         <p class="muted">See shows published by organisers, with times updated by the arena marshals.</p>
         <button class="btn primary" id="btnFollowLive" type="button">Browse live shows</button>
-      </div>
-      <div class="card" id="resumeCard" hidden>
-        <h3>Saved show</h3>
-        <p class="muted" id="resumeText"></p>
-        <button class="btn primary" id="btnResume" type="button">Go to saved show</button>
       </div>
     </section>
 
@@ -245,13 +246,22 @@
         <div class="row-btns">
           <button class="btn" id="btnResetSettings" type="button">Reset settings</button>
           <button class="btn" id="btnClearLive" type="button">Clear all live updates</button>
-          <button class="btn danger" id="btnNewShow" type="button">Load a different show</button>
+          <button class="btn" id="btnNewShow" type="button">Load another show</button>
+        </div>
+      </div>
+      <div class="card">
+        <h3>Your saved data</h3>
+        <p class="muted small" id="libStatus2"></p>
+        <p class="muted small">Uploaded files are never kept. Your processed shows and starred riders are saved in your account (and on this phone for offline use) until you delete them.</p>
+        <div class="row-btns">
+          <button class="btn danger" id="btnDeleteShow" type="button">Delete this show</button>
+          <button class="btn danger" id="btnDeleteAll" type="button">Delete all my data on this phone</button>
         </div>
       </div>
       <div class="card privacy">
         <h3>Privacy</h3>
         <p class="small" id="cloudNote" hidden></p>
-        <p class="small">Your account stores only your email address and a hashed password. Your own show is saved only on this phone, separately for each account. Live shows you publish are stored online (with riders' and horses' names) and deleted automatically 7 days after the show date; only you and your marshals can change them. If you use "Read schedule with AI", the file is sent to an AI service (outside South Africa) to be processed and is not stored; we keep only an anonymous count of AI reads to prevent abuse. The free on-phone reader never sends your file anywhere.</p>
+        <p class="small">Your account stores only your email address and a hashed password. Uploaded schedule files are never stored anywhere. Your processed shows and starred riders and horses are saved in your account (with a copy on this phone for offline use) until you delete them (above); only you can see them. Live shows you publish are stored online (with riders' and horses' names) and deleted automatically 7 days after the show date; only you and your marshals can change them. If you use "Read schedule with AI", the file is sent to an AI service (outside South Africa) to be processed and is not stored; we keep only an anonymous count of AI reads to prevent abuse. The free on-phone reader never sends your file anywhere.</p>
       </div>
     </section>
   </main>

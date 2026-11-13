@@ -226,7 +226,15 @@ Only organisers you approve can publish live shows.
 
 Tip: the Supabase SQL Editor lets you **Save** a query. Save the waiting-list and approve queries as favourites so they're one click away.
 
+## Step 14 — Saved shows and riders in each user's account
+
+1. **SQL Editor → New query**, paste the whole of `supabase/user-data.sql`, click **Run** (confirm the warning).
+2. That's it. Users' shows are saved in `user_shows` and their starred riders/horses in `user_stars`. Each person can only see and change their own (Row Level Security), up to 100 saved shows each.
+3. If someone asks you to delete their data and they can't do it in the app, delete their account under **Authentication → Users**; their saved shows and riders are deleted with it.
+
 ## POPIA notes
+
+- Each user's processed shows (which contain riders' and horses' names) and starred riders are stored in their own account until **they** delete them (bin icon on the Load screen, or Settings → Delete all my data). Uploaded files themselves are never stored.
 
 - Organiser requests store the person's account email and the organisation they typed, so you can check them; approved or withdrawn requests are deleted.
 - Live shows store the schedule, including riders' and horses' names, so all signed-in users can follow them. The publisher confirms they're allowed to share the running order, and each show is deleted automatically 7 days after its show date (job `ringside-delete-old-shows`). Only the publisher and their marshals can change a show; this is enforced by Row Level Security and database functions, not just the website.
