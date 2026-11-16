@@ -93,15 +93,17 @@ function startOfSaDayIso(): string {
   return new Date(midnightSa).toISOString();
 }
 
-const SYSTEM_PROMPT = `You read South African showjumping show schedules and running orders and convert them to JSON.
+const SYSTEM_PROMPT = `You read South African horse show schedules, programmes and running orders (mostly showjumping, sometimes with
+dressage, equitation and showing classes too) and convert them to JSON.
 Return ONLY minified JSON on one line (no spaces or line breaks between items), no other text, no markdown fences.
 Shape (shown spaced out here only for readability):
 {
   "show_name": string,
-  "show_date": "YYYY-MM-DD" or "",
+  "show_date": "YYYY-MM-DD" or "",  // the FIRST day of the show
   "classes": [
     {
       "arena": string,              // e.g. "Main Arena", "Arena 2". Use "Arena 1" if there is only one and it has no name.
+      "day": "YYYY-MM-DD",          // include ONLY when the show runs over more than one day: the day this class runs
       "class_no": string,           // e.g. "7" or "12a"
       "class_name": string,
       "height": string,             // e.g. "1.10m" ("" if not given)
@@ -112,7 +114,9 @@ Shape (shown spaced out here only for readability):
       "runs_with_previous": true,   // include ONLY if this class shares one time slot with the class before it (see rules)
       "same_course": true,          // include ONLY if the schedule says the same course is used with the height raised
       "entries": [ [draw, rider, horse] ],   // one compact array per entry, all strings, e.g. ["4","Anna Botha","Silver Moon"]
-                                             // add a 4th item "S" if scratched/withdrawn, or "D" if already jumped
+                                             // add a 4th item "S" if scratched/withdrawn, "D" if already jumped, else ""
+                                             // add a 5th item "HH:MM" ONLY if the running order prints a time for that rider,
+                                             // e.g. ["2","Paula Haltmann","Western Wonder","","08:22"]
       "uncertain": [string]         // include ONLY if you had to guess something: short notes for this class
     }
   ]
@@ -141,9 +145,38 @@ Rules:
   two rounds / Art 273 -> "Two rounds"; accumulator / Art 269 -> "Accumulator"; anything else -> "Other".
 - Entries: keep the running order (draw) order. Rider is the person, horse is the animal. If a running order is not given for a class, use an empty list.
 - Mark entries shown as withdrawn/scratched/SCR/W/D/VET (vet failed) with "S" as the 4th item.
+- Multi-day shows: put every class on its own day ("day"), taken from the nearest day heading above it
+  (e.g. "SUNDAY 16 AUGUST 2026"). The same arena name may be used on both days: keep the arena name as printed.
+- Include every competitive class in the programme (showjumping, equitation, dressage, working hunter/riding, showing):
+  they all use arena time. For dressage/equitation use height "" if none is given, and format "Other".
+- Arena start lines like "START 8:00AM", "08:00AM START", "Start APP. 11:30AM" give the start_time of the FIRST class
+  in that arena on that day; the classes after it are "follow" unless they have their own time.
+  "APP." means approximate (still use the time). "12:00 AM" on a show day means 12:00 (midday).
+- Times may be written "8:00", "8h00", "08:00am", "1:30 PM": always output 24-hour "HH:MM" with two digits ("08:00", "13:30").
+- Running order tables can have the columns in any order (often HORSE before RIDER) and the first column may be labelled
+  "RIDER", "NR" or "No" when it is really the draw number. Read the column headings and put each value in the right place.
+- A rider's or horse's name can wrap onto the next line of the table (e.g. "JANIKE VAN" / "HOUWELINGEN"): join the parts.
+- Ignore empty numbered rows in a running order (a draw number, level and height but no rider or horse): they are
+  blank lines for late entries, not entries.
+- Ignore columns for level, score, place, time & score, test name; and judges, scribes, secretaries and announcers.
+- If the starting list's class name or format for a class number differs from the timetable, keep the timetable's,
+  and add a note to "uncertain".
 - Never invent riders, horses or times. If something is unclear, make your best reading and add a note to "uncertain".`;
 
 type AnyObj = Record<string, unknown>;
+
+// "8:00", "8h00", "08:00am", "1:30 PM", "12:00 AM" (a show day, so midday) -> "HH:MM"; "follow" kept; null if not a time.
+function toHHMM(v: unknown): string | null {
+  const s = String(v ?? "").trim();
+  if (!s) return "";
+  if (/follow|thereafter|after/i.test(s)) return "follow";
+  const m = s.match(/^(?:app(?:rox)?\.?\s*)?(\d{1,2})\s*[:hH.]\s*(\d{2})(?::\d{2})?\s*(am|pm|a\.m\.|p\.m\.)?$/i);
+  if (!m) return null;
+  let h = +m[1]; const mi = +m[2];
+  if (m[3] && /p/i.test(m[3]) && h < 12) h += 12;
+  if (h > 23 || mi > 59) return null;
+  return String(h).padStart(2, "0") + ":" + String(mi).padStart(2, "0");
+}
 
 function validate(d: unknown): { ok: true; value: AnyObj } | { ok: false; error: string } {
   if (!d || typeof d !== "object" || Array.isArray(d)) return { ok: false, error: "Top level must be an object" };
@@ -157,28 +190,30 @@ function validate(d: unknown): { ok: true; value: AnyObj } | { ok: false; error:
     let format = String(c.format ?? "Other");
     const uncertain = Array.isArray(c.uncertain) ? c.uncertain.map(String).slice(0, 20) : [];
     if (!FORMATS.includes(format)) { uncertain.push(`Format "${format}" not recognised — set to Other`); format = "Other"; }
-    let start = String(c.start_time ?? "").trim();
-    if (start && start !== "follow" && !/^([01]\d|2[0-3]):[0-5]\d$/.test(start)) {
-      return { ok: false, error: `classes[${i}].start_time "${start}" must be HH:MM, "follow" or ""` };
-    }
-    if (c.entries != null && !Array.isArray(c.entries)) return { ok: false, error: `classes[${i}].entries must be an array` };
+    // Be forgiving: fix what can be fixed and leave a note, rather than failing the whole read.
+    let start = toHHMM(c.start_time);
+    if (start === null) { uncertain.push(`Start time "${String(c.start_time)}" not understood`); start = ""; }
+    const end = toHHMM(c.end_time);
+    if (c.entries != null && !Array.isArray(c.entries)) { uncertain.push("Running order could not be read"); c.entries = []; }
     const entries = [];
     for (const [j, er] of ((c.entries as unknown[]) ?? []).entries()) {
       // Compact form: ["4","Anna Botha","Silver Moon"] (+ "S" scratched / "D" done). Full objects are accepted too.
       let e: AnyObj;
       if (Array.isArray(er)) {
-        if (er.length < 3) return { ok: false, error: `classes[${i}].entries[${j}] must be [draw, rider, horse]` };
         const flag = String(er[3] ?? "").toUpperCase();
-        e = { draw: er[0], rider: er[1], horse: er[2], status: flag.startsWith("S") ? "scratched" : flag.startsWith("D") ? "done" : "starting" };
+        e = { draw: er[0], rider: er[1], horse: er[2], time: er[4], status: flag.startsWith("S") ? "scratched" : flag.startsWith("D") ? "done" : "starting" };
       } else if (er && typeof er === "object") e = er as AnyObj;
-      else return { ok: false, error: `classes[${i}].entries[${j}] must be [draw, rider, horse]` };
+      else continue;
+      if (!String(e.rider ?? "").trim() && !String(e.horse ?? "").trim()) continue; // empty numbered row
       const status = ["starting", "scratched", "done"].includes(String(e.status)) ? String(e.status) : "starting";
       entries.push({
         draw: String(e.draw ?? "").slice(0, 10),
         rider: String(e.rider ?? "").slice(0, 120),
         horse: String(e.horse ?? "").slice(0, 120),
+        time: (() => { const t = toHHMM(e.time); return t && t !== "follow" ? t : ""; })(),
         status,
       });
+      void j;
     }
     classes.push({
       arena: String(c.arena ?? "Arena 1").slice(0, 60) || "Arena 1",
@@ -187,7 +222,8 @@ function validate(d: unknown): { ok: true; value: AnyObj } | { ok: false; error:
       height: String(c.height ?? "").slice(0, 20),
       format,
       start_time: start,
-      end_time: /^([01]\d|2[0-3]):[0-5]\d$/.test(String(c.end_time ?? "")) ? String(c.end_time) : "",
+      end_time: end && end !== "follow" ? end : "",
+      day: /^\d{4}-\d{2}-\d{2}$/.test(String(c.day ?? "")) ? String(c.day) : "",
       expected_entries: Math.max(0, Math.min(500, Math.round(Number(c.expected_entries) || 0))),
       runs_with_previous: c.runs_with_previous === true,
       same_course: c.same_course === true,
@@ -370,5 +406,6 @@ Deno.serve(async (req: Request) => {
     lastError = (e as Error).message;
   }
   await logUsage(false).catch(() => {});
+  console.error("parse failed:", lastError.slice(0, 200));
   return reply(origin, 422, { ok: false, code: "parse_failed", error: `The AI couldn't produce a usable result (${lastError}). Please try the built-in reader or the CSV template.` });
 });

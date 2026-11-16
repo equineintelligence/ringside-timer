@@ -159,14 +159,14 @@
 
   function blankLive() { return { startedAt: null, finishedAt: null, nowId: null, nowAt: null, marks: [] }; }
   function makeClass(o) {
-    return Object.assign({ id: uid(), arena: "Arena 1", no: "", name: "", height: "", format: FORMATS[5], start: "", end: "", sameCourse: false, combined: false, expected: 0, entries: [], flags: [], live: blankLive() }, o || {});
+    return Object.assign({ id: uid(), arena: "Arena 1", no: "", name: "", height: "", format: FORMATS[5], start: "", end: "", day: "", sameCourse: false, combined: false, expected: 0, entries: [], flags: [], live: blankLive() }, o || {});
   }
-  function makeEntry(o) { return Object.assign({ id: uid(), draw: "", rider: "", horse: "", status: "starting", flags: [] }, o || {}); }
+  function makeEntry(o) { return Object.assign({ id: uid(), draw: "", rider: "", horse: "", time: "", status: "starting", flags: [] }, o || {}); }
 
   function normalizeShow(sh) {
     sh = sh || {};
     sh.name = sh.name || "My show";
-    sh.date = sh.date || saNow().date;
+    sh.date = sh.date || (sh.classes || []).map((c) => c.day).filter(Boolean).sort()[0] || saNow().date;
     sh.classes = (sh.classes || []).map((c) => {
       c = makeClass(c);
       c.live = Object.assign(blankLive(), c.live || {});
@@ -177,6 +177,23 @@
     });
     syncArenas(sh);
     return sh;
+  }
+  // Shows over more than one day: each class can carry its own day (YYYY-MM-DD).
+  function dayOf(c) { return (c && c.day) || (show && show.date) || ""; }
+  function dayOffset(c) {
+    const d = dayOf(c), b = show && show.date;
+    if (!d || !b || d === b) return 0;
+    return Math.round((Date.parse(d + "T12:00:00Z") - Date.parse(b + "T12:00:00Z")) / 86400000) || 0;
+  }
+  const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"], MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  function dayLabel(d) { const t = Date.parse(d + "T12:00:00Z"); if (!t) return d; const x = new Date(t); return DAYS[x.getUTCDay()] + " " + x.getUTCDate() + " " + MON[x.getUTCMonth()]; }
+  // When classes run on several days, keep each day's arena separate ("Main Arena · Sat 15 Aug") so the timing
+  // never runs Saturday's classes into Sunday's.
+  function splitDays(classes) {
+    const days = [...new Set(classes.map((c) => c.day).filter(Boolean))].sort();
+    if (days.length < 2) return days[0] || "";
+    classes.forEach((c) => { if (!c.day) c.day = days[0]; if (!c.arena.includes(" · ")) c.arena = c.arena + " · " + dayLabel(c.day); });
+    return days[0];
   }
   function syncArenas(sh) {
     const old = {};
@@ -251,10 +268,12 @@
       const cb = norm(get(r, "combined")); if (cb && /^(y|yes|true|1)$/.test(cb)) cur.combined = true;
       const ex = parseInt(get(r, "expected_entries"), 10); if (ex > 0 && !cur.expected) cur.expected = ex;
       const et = normTime(get(r, "end_time")); if (et && et !== "follow" && !cur.end) cur.end = et;
+      const dy = get(r, "day"); if (/^\d{4}-\d{2}-\d{2}$/.test(dy) && !cur.day) cur.day = dy;
       const rider = get(r, "rider"), horse = get(r, "horse"), draw = get(r, "draw");
       if (rider || horse || draw) {
         const stt = norm(get(r, "status"));
         const e = makeEntry({ draw, rider, horse, status: /scratch|withdraw|^w\/?d$/.test(stt) ? "scratched" : /done|jumped/.test(stt) ? "done" : "starting" });
+        const tt = normTime(get(r, "entry_time")); if (tt && tt !== "follow") e.time = tt;
         if (!rider || !horse) e.flags.push("Missing rider or horse");
         cur.entries.push(e);
       }
@@ -266,11 +285,14 @@
   }
   // shared checks after any import
   function finishImportFlags(classes) {
+    splitDays(classes);
     const seen = {}, nos = {};
     classes.forEach((c) => { const k = c.arena + "|" + norm(c.no); if (c.no) nos[k] = (nos[k] || 0) + 1; });
     classes.forEach((c) => { if (c.no && nos[c.arena + "|" + norm(c.no)] > 1) c.flags.push("Class number " + c.no + " appears more than once in " + c.arena + " — check the timetable"); });
     classes.forEach((c) => {
       const first = !seen[c.arena]; seen[c.arena] = true;
+      const t0 = c.entries.map((e) => e.time).filter(Boolean).sort()[0];
+      if (first && t0 && (!c.start || c.start === "follow")) c.start = t0;
       if (!c.start) {
         if (first) { c.flags.push("First class in this arena has no start time (using " + S.dayStart + ")"); c.combined = false; }
         else { c.start = "follow"; }
@@ -278,19 +300,19 @@
       if (c.start === "follow" && first) c.flags.push('First class in the arena is "to follow" — please add a start time');
       if (!c.entries.length && c.expected) c.flags.push("Running order not loaded yet — times use the " + c.expected + " entries in the timetable. Add the starting list when it's published.");
       else if (!c.entries.length) c.flags.push("No running order found for this class");
-      if (!c.height) c.flags.push("No height found");
+      if (!c.height && !RE_OTHERTYPE.test(c.name) && !/dressage|equitation|showing/i.test(c.arena)) c.flags.push("No height found");
     });
   }
 
   function showToCSV(withExtras) {
-    const cols = CSV_COLS.concat(withExtras ? ["status", "same_course", "expected_entries", "combined", "end_time"] : []);
+    const cols = CSV_COLS.concat(withExtras ? ["status", "same_course", "expected_entries", "combined", "end_time", "day", "entry_time"] : []);
     const lines = [cols.join(",")];
     show.classes.forEach((c) => {
       const base = [c.arena, c.no, c.name, c.height, c.format];
       const list = c.entries.length ? c.entries : [null];
       list.forEach((e, i) => {
         const row = base.concat([i === 0 ? c.start : "", e ? e.draw : "", e ? e.rider : "", e ? e.horse : ""]);
-        if (withExtras) row.push(e ? e.status : "", i === 0 && c.sameCourse ? "yes" : "", i === 0 && c.expected ? c.expected : "", i === 0 && c.combined ? "yes" : "", i === 0 ? c.end || "" : "");
+        if (withExtras) row.push(e ? e.status : "", i === 0 && c.sameCourse ? "yes" : "", i === 0 && c.expected ? c.expected : "", i === 0 && c.combined ? "yes" : "", i === 0 ? c.end || "" : "", i === 0 ? c.day || "" : "", e ? e.time || "" : "");
         lines.push(row.map(csvCell).join(","));
       });
     });
@@ -345,13 +367,18 @@
   }
 
   const RE_CLASS = /\bclass\s*(?:no\.?|number|nr\.?|#)?\s*[:.\-]?\s*(\d{1,3}(?:\.\d{1,2})?[a-z]?)\b/i;
-  const RE_HEIGHT = /\b(\d[.,]\d{1,2})\s*m\b|\b(\d{2,3})\s*cm\b/i;
-  const RE_HEIGHTS = /(\d[.,]\d{1,2}\s*m|\d{2,3}\s*cm)(\s*\/\s*(\d[.,]\d{1,2}\s*m?|\d{2,3}\s*(cm)?|\d\s*m))*/i;
-  const RE_TIME = /\b([01]?\d|2[0-3])\s*[:hH]\s*([0-5]\d)\b|\b([01]?\d|2[0-3])\.([0-5]\d)(?!\s*m\b)(?!\d)/;
+  const RE_HEIGHT = /\b(\d[.,]\d{1,2})\s*m\b|\b(\d{2,3})\s*c[mn]\b/i;
+  const RE_HEIGHTS = /(\d[.,]\d{1,2}\s*m|\d{2,3}\s*c[mn]\b|\b[12]\s*m\b|\bPOG\b)(\s*\/\s*(\d[.,]\d{1,2}\s*m?|\d{2,3}\s*(cm)?|\d\s*m))*/i;
+  const RE_TIME = /\b([01]?\d|2[0-3])\s*[:hH]\s*([0-5]\d)(?!\d)|\b([01]?\d|2[0-3])\.([0-5]\d)(?!\s*m\b)(?!\d)/;
   const RE_TIME_RANGE = /\b([01]?\d|2[0-3])\s*[:hH.]\s*([0-5]\d)\s*(?:-|–|to)\s*([01]?\d|2[0-3])\s*[:hH.]\s*([0-5]\d)\b/;
   const RE_FOLLOW = /to follow|follows|followed|thereafter|\bafter class\b|\bfollow\b/i;
   const RE_ARENA = /\b(arena|ring)\s*[:\-]?\s*([a-z0-9][\w ]{0,20})/i;
-  const RE_CLASSTYPE = /\b(a[12]\b|table [abc]|competition|phases?|speed|jump[\s-]?off|clear round|accumulator|two rounds|puissance|power|derby|equitation|optimum|grand prix|handicap|h\/cap)/i;
+  const RE_CLASSTYPE = /\b(a[12]\b|table [abc]|competition|phases?|speed|jump[\s-]?off|clear round|accumulator|two rounds|puissance|power|derby|equitation|eq\b|optimum|grand prix|handicap|h\/cap)/i;
+  // dressage, showing and equitation classes (no height needed)
+  const RE_OTHERTYPE = /\b(test|working hunter|working\b|utility|in hand|equitation|showing|hack|prelim|novice|elementary|walk\s*\/?\s*trot)/i;
+  const RE_DAYLINE = /\b(mon|tue|wed|thu|fri|sat|sun)[a-z]*\.?,?\s+(\d{1,2})(?:st|nd|rd|th)?\s+([a-z]{3})[a-z]*,?\s+(20\d{2})\b/i;
+  // headings that are never riders or horses
+  const RE_HEADWORDS = /\b(continues?|arena ends|arena change|timetable|program(me)?|show ?jumping|dressage|showing|equitation|judge|scribe|secretary|recorders?|announcer|time ?keeper|please note|sponsored)\b|^pg\s*\d+$|^page\s*\d+/i;
   // lines on show information pages that are never riders or classes
   const RE_NOISE = /\b(bank|account|branch|swift|refund|entry fee|entries close|closing date|terms|conditions|catering|weather forecast|forecast from|enquir|e-?mail|www\.|https?:|@|levy|levies|rosette|prize money|dogs|liable|responsib|disclaimer|organisers reserve|office hours|powered by|classic view|tap to open|click on|deposit|vat\b|sasj|saef|fei rules|show holding body|course designer|speed \/ spread|loading)/i;
   const MONTHS = { jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12 };
@@ -361,7 +388,9 @@
     if (!m) return null;
     const h = +(m[1] != null ? m[1] : m[3]); const mi = +(m[2] != null ? m[2] : m[4]);
     if (m[3] != null && h < 6) return null; // "1.10" is a height, not a time
-    return pad(h) + ":" + pad(mi);
+    const after = s.slice(s.indexOf(m[0]) + m[0].length);
+    let hh = h; if (/^\s*p\.?m\b/i.test(after) && hh < 12) hh += 12; // "12:00 AM" on a show day is midday: leave it
+    return pad(hh) + ":" + pad(mi);
   }
   function findTimeRange(s) {
     const m = s.match(RE_TIME_RANGE);
@@ -370,7 +399,7 @@
   function findHeight(s) {
     const m = s.match(RE_HEIGHTS);
     if (!m) return "";
-    return m[0].replace(/,/g, ".").replace(/\s+/g, "").replace(/(\d)m(?=\/|$)/g, "$1m");
+    return m[0].replace(/,/g, ".").replace(/\s+/g, "").replace(/(\d)c[mn]/gi, "$1cm").replace(/(\d)M\b/g, "$1m").replace(/^pog$/i, "POG");
   }
   function findDate(s) {
     let m = s.match(/\b(\d{4})-(\d{2})-(\d{2})\b/);
@@ -382,6 +411,12 @@
   const BADGE = /^(stallion|scr|vet|w\/?d|hc|h\/c|nc|rsa|zaf)$/i;
   // Names are mostly Capitalised words; sentences from terms and conditions are not.
   const PARTICLES = /^(du|de|der|den|van|von|le|la|da|di|del|dos|in|of|the|and|on|o'|van't|ter|ten|y|a|my|i'm)$/i;
+  function lev(a, b) {
+    if (Math.abs(a.length - b.length) > 2) return 9;
+    const dp = Array.from({ length: b.length + 1 }, (_, j) => j);
+    for (let i = 1; i <= a.length; i++) { let prev = dp[0]; dp[0] = i; for (let j = 1; j <= b.length; j++) { const t = dp[j]; dp[j] = Math.min(dp[j] + 1, dp[j - 1] + 1, prev + (a[i - 1] === b[j - 1] ? 0 : 1)); prev = t; } }
+    return dp[b.length];
+  }
   function looksLikeName(s) {
     if (!s || s.length < 2 || s.length > 45 || /\d/.test(s) || /[:@=;]/.test(s) || !/[a-z]/i.test(s)) return false;
     const words = s.trim().split(/\s+/);
@@ -394,28 +429,58 @@
     const classes = []; let arena = "Arena 1"; let cur = null; let cols = null;
     let showName = "", showDate = "", docComp = "";
     let pendPair = null, pendDraw = null, pendStatus = "starting";
+    let curDay = "", arenaStart = null, pend = null;
     const setArena = (raw) => {
       arena = raw.replace(/\s+/g, " ").trim().replace(/^[:\-–\s]+|[:\-–\s]+$/g, "");
       if (arena === arena.toUpperCase()) arena = arena.toLowerCase().replace(/\b\w/g, (ch) => ch.toUpperCase()); // "MAIN ARENA" → "Main Arena"
       arena = arena.charAt(0).toUpperCase() + arena.slice(1);
+      // typos between pages ("Flying Tyger Arena" / "Flying Tiger Arena") are the same arena
+      const same = [...new Set(classes.map((c) => c.arena))].find((n) => n !== arena && n.length > 8 && lev(norm(n), norm(arena)) <= 2);
+      if (same) arena = same;
+      arenaStart = null;
     };
     const addEntry = (draw, rider, horse, status, flagged) => {
       const e = makeEntry({ draw: String(draw), rider: rider || "", horse: horse || "", status: status || "starting" });
       if (flagged || !rider || !horse) e.flags.push("Could not split rider and horse — please check");
       cur.entries.push(e);
     };
-    const newClass = (o) => { cur = makeClass(Object.assign({ arena }, o)); cur._comp = docComp; classes.push(cur); cols = null; pendPair = null; pendDraw = null; return cur; };
+    const newClass = (o) => { cur = makeClass(Object.assign({ arena, day: curDay }, o)); cur._comp = docComp; cur._arenaStart = arenaStart; arenaStart = null; classes.push(cur); cols = null; pendPair = null; pendDraw = null; pend = null; return cur; };
+    // a running-order line split into its parts: draw, printed time, and the name cells
+    const TESTWORDS = /^(?:(?:elim|elem)[ei]ntary|novice|prelim(?:inary)?|welcome|intro(?:ductory)?|walk\s*\/?\s*trot(?:\s*\/?\s*canter)?\s*\/?|canter)?\s*(?:test\s*\d+(?:\s+20\d\d)?)?\s*/i;
+    const splitRow = (cs) => {
+      let d = null, tm = null, i0 = 0;
+      if (/^\d{1,3}[.)]?$/.test(cs[0] || "")) { d = cs[0].replace(/[.)]/, ""); i0 = 1; }
+      const names = [];
+      cs.slice(i0).forEach((x) => {
+        const z = x.replace(/\s+/g, "");
+        if (!tm && /^\d{1,2}[:h]\d{2}(am|pm)?$/i.test(z)) { tm = findTime(z); return; }
+        if (cols && cols.test) x = x.replace(TESTWORDS, "").trim();
+        x = x.replace(/^(\d{2,3}\s*c[mn]|\d[.,]\d{1,2}\s*m|[12]\s*m|pog)(?![a-z])\s*/i, "").replace(/\s*(\d{2,3}\s*c[mn]|\d[.,]\d{1,2}\s*m)$/i, "").trim();
+        if (!x || !/[a-z]/i.test(x.replace(/\b(cm|cn|m|pog)\b/gi, "")) || /^(training|intro(ductory)?|level\s*\d*|adult|junior|pony|score|place)$/i.test(x)) return;
+        names.push(x);
+      });
+      return { d, tm, names };
+    };
+    const addPair = (d, tm, a, b, status, flagged) => {
+      const rider = cols && cols.horseFirst ? b : a, horse = cols && cols.horseFirst ? a : b;
+      addEntry(d, rider, horse, status, flagged);
+      if (tm) cur.entries[cur.entries.length - 1].time = tm;
+    };
     for (const raw of lines) {
       const line = String(raw || "").trim();
       if (!line) continue;
       if (line === "=== NEXT DOCUMENT ===") { cur = null; cols = null; pendPair = pendDraw = null; docComp = ""; continue; }
       const flat = line.replace(/\t/g, " ");
       let cells = line.split("\t").map((c) => c.trim()).filter(Boolean);
+      // day headings ("SUNDAY 16 AUGUST 2026"): classes below run on that day
+      const dl = flat.length < 80 && flat.match(RE_DAYLINE);
+      if (dl) { const d = findDate(dl[0].replace(/^[a-z]+\.?,?\s+/i, "")); if (d) { curDay = d; if (!showDate) showDate = d; cur = null; cols = null; pend = null; continue; } }
+      if (/^p(?:g|age)\.?\s*\d+$/i.test(flat)) { pend = null; continue; }
       // show name and date (before the first class of a document)
       if (!showDate) { const d = findDate(flat); if (d && flat.length < 60) showDate = d; }
       const kv = flat.match(/^(competition|show|event|arena|date|class|grade|height|type|rule)\s*:\s*(.+)$/i);
       if (kv && /competition|show|event/i.test(kv[1])) { docComp = kv[2].trim(); if (!showName) showName = docComp; if (cur && !cur.entries.length) cur._comp = docComp; continue; }
-      if (!cur && !showName && /\bshow\b/i.test(flat) && flat.length <= 70 && !RE_NOISE.test(flat) && !RE_CLASS.test(flat)) { showName = flat.trim(); continue; }
+      if (!cur && !showName && /\b(show|series|league|championships?|classic|festival)\b/i.test(flat) && !/show\s*jump|showjumping|\bshowing\b/i.test(flat) && flat.length <= 70 && !RE_NOISE.test(flat) && !RE_CLASS.test(flat)) { showName = flat.trim(); continue; }
       if (RE_NOISE.test(flat) || /=/.test(flat)) continue;
       if (/\b\d+\s*yr\b/i.test(flat) || /^(gelding|mare|stallion|colt|filly)\b/i.test(flat)) continue; // breeding line under the horse
       if (kv && /^arena$/i.test(kv[1])) { setArena(kv[2]); if (cur && !cur.entries.length) cur.arena = arena; continue; }
@@ -429,10 +494,21 @@
       }
       // Arena heading
       const cm = flat.match(RE_CLASS);
+      if (!cm && /\barena\s+(change|ends)|\d+\s*x\s*\d+|arena\s+ends/i.test(flat)) continue; // "ARENA CHANGES TO 20 X 40", "ARENA ENDS"
+      // arena start lines: "START 8:00AM", "08:00AM START", "Start APP. 11:30AM", "TO START AFTER WORKING HUNTER"
+      if (!cm && flat.length < 80 && /\bstart(ing)?\b/i.test(flat) && !/\bclass\b.*\b(level|entries|height)\b|\bentries\b/i.test(flat)) {
+        const t = findTime(flat);
+        if (t) { arenaStart = t; continue; }
+        if (RE_FOLLOW.test(flat) || /start\s+after/i.test(flat)) { arenaStart = "follow"; continue; }
+      }
+      if (!cm && /\bclass\b/i.test(flat) && /\b(entries|level)\b/i.test(flat)) { cols = null; continue; } // timetable heading row
       if (!cm && flat.length <= 40 && /\b(arena|ring)\b/i.test(flat) && !/^\d/.test(cells[0] || "") && !findTime(flat)) {
         setArena(/^arena\s*:/i.test(flat) ? flat.replace(/^arena\s*:\s*/i, "") : flat);
         continue;
       }
+      // a timetable row that starts with its time: "08:00am | 6 | 2 | 60CM – COMPETITION | 11"
+      let rowTime = null;
+      if (!cm && !cols && cells.length >= 3 && /^\d{1,2}\s*[:h.]\s*\d{2}\s*(am|pm)?$/i.test(cells[0]) && /^\d{1,3}(\.\d{1,2})?[a-z]?$/i.test(cells[1])) { rowTime = findTime(cells[0]); cells = cells.slice(1); }
       // Timetable row without the word "Class": "1.2 | A2 Competition | 1.30m J/AD | 3 | 8h00 - 8h10"
       // (the class number is often printed right up against the class type: "1.2 A2 Competition")
       const lead = (cells[0] || "").match(/^(\d{1,3}(?:\.\d{1,2})?[a-z]?)\s+(\D.*)$/i);
@@ -443,43 +519,91 @@
         const hCell = cells.slice(1).find((x) => RE_HEIGHTS.test(x)) || "";
         c.height = findHeight(hCell);
         const extra = hCell.replace(RE_HEIGHTS, "").replace(/\s+/g, " ").trim();
-        c.name = (typeCell + (extra ? " " + extra : "")).trim().slice(0, 80);
-        const f = normalizeFormat(typeCell); if (f) { c.format = f; c._fmt = true; }
+        c.name = (typeCell + (extra ? " " + extra : "")).replace(/^[\s:\-–|.,]+|[\s:\-–|.,]+$/g, "").replace(/\s+[-–]\s*$/, "").trim().slice(0, 80);
+        const f = normalizeFormat(typeCell || hCell); if (f) { c.format = f; c._fmt = true; } else if (RE_OTHERTYPE.test(flat) || /\beq\b|\bclear round\b|^\W*competition\W*$/i.test(c.name)) c._fmt = true;
         const hIdx = cells.indexOf(hCell);
         const cnt = cells.slice(hIdx + 1).find((x) => /^\d{1,3}$/.test(x));
         if (cnt) c.expected = +cnt;
         const tr = findTimeRange(flat);
         if (tr) { c.start = tr.start; c.end = tr.end; }
-        else { const t = findTime(cells.slice(hIdx + 1).join(" ")); if (t) c.start = t; else { c.combined = true; c._noTime = true; } }
+        else { const t = rowTime || findTime(cells.slice(hIdx + 1).join(" ")); if (t) c.start = t; else { c.combined = true; c._noTime = true; } }
+        continue;
+      }
+      // Dressage / showing / equitation timetable row: "21 | 1 | Novice test 2 | 6", "43 | 3 | Working Hunter | 2"
+      if (!cm && !cols && /^\d{1,3}[a-z]?$/i.test(cells[0] || "") && cells.length >= 3 && RE_OTHERTYPE.test(flat) && !RE_NOISE.test(flat)) {
+        const c = newClass({ no: cells[0] });
+        const last = cells[cells.length - 1];
+        if (/^\d{1,3}$/.test(last)) c.expected = +last;
+        c.name = cells.slice(1, /^\d{1,3}$/.test(last) ? -1 : undefined).filter((x) => !/^(\d|training|intro(ductory)?)$/i.test(x)).join(" ").replace(/\s+/g, " ").slice(0, 80);
+        c.height = findHeight(flat); c._fmt = true;
+        if (rowTime) c.start = rowTime; else { c.combined = true; c._noTime = true; }
         continue;
       }
       // Class heading: "Class 3 - 1.10m A2 Competition  09:00"
       if (cm && !/^\d{1,3}$/.test(cells[0] || "")) {
         const am = flat.match(RE_ARENA);
         if (am && flat.indexOf(am[0]) > -1 && !/arena familiar/i.test(flat)) setArena(am[1] + " " + am[2].split(/\s{1,}/)[0]);
-        const c = newClass({ no: cm[1] });
+        const c = newClass({ no: cm[1] }); c._heading = true;
+        c._also = (flat.slice(flat.indexOf(cm[0]) + cm[0].length).match(/^\s*((?:&|and|\/)\s*\d{1,3}[a-z]?\s*)+/i) || [""])[0].match(/\d{1,3}[a-z]?/gi) || [];
         const body = flat.replace(/^class\s*:\s*/i, "");
         let name = body.replace(cm[0], "").replace(RE_TIME_RANGE, "").replace(RE_TIME, "").replace(RE_HEIGHTS, "").replace(RE_FOLLOW, "")
           .replace(/^[\s:\-–|.,]+|[\s:\-–|.,]+$/g, "").replace(/\s{2,}/g, " ");
-        c.name = name.slice(0, 80);
+        c.name = name.replace(/^(?:(?:&|and|\/)\s*\d{1,3}[a-z]?\s*)+[-–:\s]*/i, "").slice(0, 80);
         c.height = findHeight(body);
         const tr = findTimeRange(body);
         if (tr) { c.start = tr.start; c.end = tr.end; } else { const t = findTime(body); if (t) c.start = t; else if (RE_FOLLOW.test(body)) c.start = "follow"; }
-        const f = normalizeFormat(body); if (f) { c.format = f; c._fmt = true; }
+        const f = normalizeFormat(body); if (f) { c.format = f; c._fmt = true; } else if (RE_OTHERTYPE.test(body)) c._fmt = true;
         continue;
       }
       if (!cur) continue;
+      if (RE_HEADWORDS.test(flat) && !/^\d/.test(cells[0] || "")) { pend = null; continue; }
       // Column heading row
       const lc = cells.map(norm);
       if (lc.some((c) => /rider|competitor|athlete/.test(c)) && lc.some((c) => /horse/.test(c))) {
-        cols = { rider: lc.findIndex((c) => /rider|competitor|athlete/.test(c)), horse: lc.findIndex((c) => /horse/.test(c)), draw: lc.findIndex((c) => /^(draw|no\.?|nr|#|order|start|ro)$/.test(c)) };
+        const rIdx = lc.map((c, i) => (/rider|competitor|athlete/.test(c) ? i : -1)).filter((i) => i >= 0);
+        const twoRider = rIdx.length > 1 && rIdx[0] === 0; // "RIDER | LEVEL | HEIGHT | HORSE | RIDER": the first is really the draw number
+        cols = { rider: twoRider ? rIdx[1] : rIdx[0], horse: lc.findIndex((c) => /horse/.test(c)), draw: twoRider ? 0 : lc.findIndex((c) => /^(draw|no\.?|nr|#|order|start|ro)$/.test(c)), test: lc.some((c) => /^test$/.test(c)), time: lc.some((c) => /^time$/.test(c)), twoRider };
+        cols.horseFirst = cols.horse >= 0 && cols.horse < cols.rider;
+        cols.smart = cols.twoRider || cols.horseFirst || cols.test || cols.time;
         continue;
       }
-      if (/^(no|rider|horse|draw)$/i.test(flat)) continue;
+      if (/^(no|rider|horse|draw|score|place|time\s*&?\s*score)$/i.test(flat)) continue;
       // status badges (SCR = scratched, VET = vet failed) and other tags
       let status = "starting";
       if (cells.some((c) => /^(scr|vet|w\/?d)$/i.test(c)) || /\b(scratched|withdrawn)\b/i.test(flat)) status = "scratched";
       cells = cells.filter((c) => !BADGE.test(c));
+      // Running orders whose columns need reading carefully (horse before rider, printed times, names that wrap
+      // onto the next line, blank numbered rows for late entries)
+      if (cols && cols.smart) {
+        const { d, tm, names } = splitRow(cells);
+        if (d != null) {
+          pend = null;
+          if (names.length >= 2) addPair(d, tm, names[0], names[names.length - 1], status);
+          else pend = { d, tm, frag: names[0] || null, status };
+          continue;
+        }
+        if (pend && names.length >= 1 && names.length <= 2) {
+          const P = pend; pend = null;
+          if (!P.frag) {
+            if (names.length === 2) addPair(P.d, P.tm, names[0], names[1], P.status);
+            else { addEntry(P.d, names[0], "", P.status, true); if (P.tm) cur.entries[cur.entries.length - 1].time = P.tm; }
+          } else if (names.length === 1) addPair(P.d, P.tm, P.frag, names[0], P.status);
+          else {
+            // the first line held part of one name: join it to the value it belongs to
+            const one = (x) => x.trim().split(/\s+/).length === 1;
+            const riderSecond = cols.horseFirst; // the rider is the second name column
+            let joinSecond;
+            if (one(names[1]) && !one(names[0])) joinSecond = true;
+            else if (one(names[0]) && !one(names[1])) joinSecond = false;
+            else if (one(names[0])) joinSecond = riderSecond; // both one word: usually a rider's surname ("CECILIA" / "BEZUIDENHOUT")
+            else joinSecond = !riderSecond;                   // both longer: usually a horse's prefix ("CHAMPION" / "MASTER VISION")
+            if (joinSecond) addPair(P.d, P.tm, names[0], P.frag + " " + names[1], P.status);
+            else addPair(P.d, P.tm, P.frag + " " + names[0], names[1], P.status);
+          }
+          continue;
+        }
+        if (cur.entries.length) continue;
+      }
       // Entry row
       let draw = null, rider = "", horse = "", flagged = false;
       if (cols && cells.length >= 2) {
@@ -530,9 +654,13 @@
     // Merged timetable cells: the time is printed on the middle row of the group (e.g. 9 / 10.2 12h45–13h15 / 23).
     // Give it to the first row of the group and mark the others as running straight on.
     const byArena = {};
-    classes.forEach((c, i) => { (byArena[c.arena] = byArena[c.arena] || []).push(i); });
+    classes.forEach((c, i) => { (byArena[c.arena + "|" + c.day] = byArena[c.arena + "|" + c.day] || []).push(i); });
     Object.values(byArena).forEach((idx) => {
       const rows = idx.map((i) => classes[i]);
+      // "START 8:00AM" above the arena's classes
+      rows.forEach((c) => { if ((!c.start || c._noTime) && c._arenaStart && !c.end && !c._heading) { c.start = c._arenaStart; c.combined = false; delete c._noTime; } });
+      // No time windows anywhere in this arena: classes without a time simply follow on (with changeovers)
+      if (!rows.some((c) => c.end)) { rows.forEach((c) => { if (c._noTime) { delete c._noTime; c.combined = false; c.start = c.start || "follow"; } }); return; }
       const timed = rows.map((c, k) => (c.start && c.start !== "follow" && !c._noTime ? k : -1)).filter((k) => k >= 0);
       const taken = new Set();
       timed.forEach((k) => {
@@ -550,14 +678,31 @@
     // A starting list for a class that's already in the timetable: put its riders into that class
     const merged = [];
     classes.forEach((c) => {
-      const twin = merged.find((m) => norm(m.no) === norm(c.no) && !m.entries.length && c.entries.length && !m._merged);
+      const sameDay = (m) => !m.day || !c.day || m.day === c.day;
+      const twin = merged.find((m) => norm(m.no) === norm(c.no) && sameDay(m) && !m.entries.length && c.entries.length && !m._merged);
       if (twin) {
-        twin.entries = c.entries; twin._merged = true;
+        twin.entries = c.entries; twin._merged = true; twin._also = c._also;
         if (!twin.height && c.height) twin.height = c.height;
         if (c._comp && showName && norm(c._comp) !== norm(showName)) twin.flags.push("Running order says it's from “" + c._comp + "” — check it belongs to this show");
         return;
       }
+      // a repeated class heading with no riders under it (page layout), when that class is already there
+      if (c._heading && !c.entries.length && merged.some((m) => norm(m.no) === norm(c.no) && sameDay(m))) return;
       merged.push(c);
+    });
+    // "Class 22 & 23" or "Class 18a & 19a" starting lists cover those timetable classes: drop their empty placeholders
+    const absorbed = new Set();
+    merged.forEach((c) => { if (c.entries.length) [c.no].concat(c._also || []).forEach((n) => { absorbed.add(c.arena + "|" + norm(n)); absorbed.add(c.arena + "|" + norm(n).replace(/[a-z]$/, "")); }); });
+    for (let i = merged.length - 1; i >= 0; i--) { const c = merged[i]; if (!c.entries.length && !c._heading && absorbed.has(c.arena + "|" + norm(c.no)) && merged.some((m) => m !== c && m.entries.length && m.arena === c.arena && (m.no === c.no || (m._also || []).concat(m.no).some((n) => norm(n).replace(/[a-z]$/, "") === norm(c.no))))) merged.splice(i, 1); }
+    // arenas where the running order prints each rider's time (dressage): keep the classes in time order
+    [...new Set(merged.map((c) => c.arena))].forEach((a) => {
+      const list = merged.filter((c) => c.arena === a);
+      if (!list.some((c) => c.entries.some((e) => e.time))) return;
+      let key = 0; const keyOf = new Map();
+      list.forEach((c) => { const t = c.entries.map((e) => parseTime(e.time)).filter((x) => x != null); if (t.length) key = Math.min(...t); keyOf.set(c, key); });
+      const sorted = list.slice().sort((x, y) => keyOf.get(x) - keyOf.get(y));
+      const idx = merged.map((c, i) => (c.arena === a ? i : -1)).filter((i) => i >= 0);
+      idx.forEach((i, k) => (merged[i] = sorted[k]));
     });
     merged.forEach((c) => {
       if (!c._fmt) c.flags.push("Class format not found — set to Other");
@@ -565,7 +710,7 @@
       if (c._grouped) c.flags.push("Shares a time slot with the class before it in the timetable — runs straight on");
       if (c._comp && showName && norm(c._comp) !== norm(showName) && classes.length > 1) c.flags.push("This running order says it's from “" + c._comp + "”, not “" + showName + "” — check it belongs to this show");
       c.flags.push("Read automatically — check rider/horse order and times");
-      delete c._fmt; delete c._noTime; delete c._comp; delete c._merged; delete c._grouped;
+      delete c._fmt; delete c._noTime; delete c._comp; delete c._merged; delete c._grouped; delete c._heading; delete c._arenaStart; delete c._also;
     });
     if (!merged.length) throw new Error("We couldn't find any classes in that file. Try the AI reader, or fill in the CSV template.");
     finishImportFlags(merged);
@@ -624,12 +769,14 @@
         arena: String(c.arena || "Arena 1").trim(), no: String(c.class_no || "").trim(), name: String(c.class_name || "").trim(),
         height: String(c.height || "").trim(), start: normTime(c.start_time) || "",
         format: normalizeFormat(c.format) || FORMATS[5], sameCourse: !!c.same_course,
-        end: normTime(c.end_time) || "", expected: Math.max(0, parseInt(c.expected_entries, 10) || 0), combined: !!c.runs_with_previous
+        end: normTime(c.end_time) || "", expected: Math.max(0, parseInt(c.expected_entries, 10) || 0), combined: !!c.runs_with_previous,
+        day: /^\d{4}-\d{2}-\d{2}$/.test(c.day || "") ? c.day : ""
       });
       k.flags = (c.uncertain || []).map(String);
       if (c.start_time && normTime(c.start_time) === null) k.flags.push('Start time "' + c.start_time + '" not understood');
       k.entries = (c.entries || []).map((e) => {
         const x = makeEntry({ draw: String(e.draw == null ? "" : e.draw), rider: String(e.rider || ""), horse: String(e.horse || ""), status: ["starting", "scratched", "done"].includes(e.status) ? e.status : "starting" });
+        const tt = normTime(e.time); if (tt && tt !== "follow") x.time = tt;
         if (e.uncertain) x.flags.push(typeof e.uncertain === "string" ? e.uncertain : "AI was unsure about this entry");
         return x;
       });
@@ -671,11 +818,14 @@
   function compute(useLive) {
     const TS = T();
     const now = saNow();
-    const today = !show.date || show.date === now.date;
     const out = { cls: {}, ent: {}, arenas: {} };
     const prize = TS.prizeMin * 60, walkS = TS.walkMin * 60, reb = TS.changeRebuiltMin * 60, same = TS.changeSameMin * 60;
     show.arenas.forEach((a) => {
       const list = show.classes.filter((c) => c.arena === a.name);
+      const aDay = dayOf(list[0]); const today = !aDay || aDay === now.date;
+      // printed rider times across the arena (dressage): the usual gap between riders, for classes with only one rider
+      const aGaps = []; list.forEach((c) => { const ts = c.entries.filter((e) => e.status !== "scratched").map((e) => parseTime(e.time)); ts.forEach((t, i) => { if (i && t != null && ts[i - 1] != null && t > ts[i - 1]) aGaps.push(t - ts[i - 1]); }); });
+      aGaps.sort((x, y) => x - y); const arenaFixedSpr = aGaps.length ? aGaps[Math.floor(aGaps.length / 2)] : null;
       const L = parseTime(a.lunchStart); const D = (+a.lunchMin || 0) * 60;
       let lunchTaken = false; let prevEnd = null;
       // The organiser's plan: a class with a time window (e.g. 8h00–8h10), plus any classes that run on in the
@@ -700,10 +850,15 @@
         const avg = useLive ? actualAvg(c, starters) : null;
         const g = plan[c.id];
         const planSpr = g.end != null && g.count > 0 ? Math.min(400, Math.max(40, (g.end - g.start) / g.count)) : null;
-        const spr = avg ? avg.spr : planSpr || defaultSpr(c.format);
+        const fixedT = starters.map((e) => parseTime(e.time));
+        const gaps = fixedT.map((t, i) => (i && t != null && fixedT[i - 1] != null ? t - fixedT[i - 1] : null)).filter((g) => g != null && g > 0).sort((x, y) => x - y);
+        const fixedSpr = gaps.length ? Math.min(900, Math.max(40, gaps[Math.floor(gaps.length / 2)])) : fixedT.some((t) => t != null) && arenaFixedSpr ? Math.min(900, Math.max(40, arenaFixedSpr)) : null; // e.g. dressage: one rider every 7 min
+        const spr = avg ? avg.spr : planSpr || fixedSpr || defaultSpr(c.format);
         const sched = parseTime(c.start);
         let cand, lunch = null;
-        if (prevEnd == null) cand = sched != null ? sched : parseTime(TS.dayStart) || 8 * 3600;
+        const fixedFirst = fixedT.find((t) => t != null);
+        if (fixedFirst != null && sched == null) cand = prevEnd == null ? fixedFirst : Math.max(fixedFirst, prevEnd); // printed rider times (dressage): no changeover allowance
+        else if (prevEnd == null) cand = sched != null ? sched : parseTime(TS.dayStart) || 8 * 3600;
         else if (c.combined) cand = prevEnd; // shares a time slot: runs straight on, no prize-giving or course change in between
         else if (sched != null && prevGroup && prevGroup.end != null && sched >= prevGroup.end) cand = prevEnd + (sched - prevGroup.end); // the organiser's own changeover time
         else {
@@ -725,7 +880,7 @@
         else if (nowIdx >= 0) { start = lv.nowAt - nowIdx * spr; startSrc = "derived"; }
         const finished = lv.finishedAt != null || (useLive && ci < lastLive);
         const inProgress = !finished && (lv.startedAt != null || nowIdx >= 0);
-        let lastT = null;
+        let lastT = null, cursor = null;
         const markAt = {}; (lv.marks || []).forEach((m) => (markAt[m.id] = m.t));
         c.entries.forEach((e) => {
           if (e.status === "scratched") out.ent[e.id] = { t: null, state: "scratched", cls: c.id };
@@ -738,11 +893,16 @@
               state = "done";
             } else if (i === nowIdx) { t = lv.nowAt; state = "now"; }
             else {
-              let next = lv.nowAt + spr;
+              let next = cursor != null ? cursor : lv.nowAt + spr;
               if (inProgress && today) next = Math.max(next, now.sec);
-              t = next + (i - nowIdx - 1) * spr; state = "upcoming";
+              t = fixedT[i] != null ? Math.max(next, fixedT[i]) : next; cursor = t + spr; state = "upcoming";
             }
-          } else { t = start + i * spr; state = e.status === "done" ? "done" : "upcoming"; }
+          } else {
+            // a time printed next to the rider (e.g. dressage) is the earliest they'll go
+            const next = cursor != null ? cursor : start;
+            t = fixedT[i] != null ? Math.max(next, fixedT[i]) : next; cursor = t + spr;
+            state = e.status === "done" ? "done" : "upcoming";
+          }
           if (finished) state = "done";
           out.ent[e.id] = { t, state, cls: c.id, actual: markAt[e.id] != null && (state === "done" || state === "now") };
           lastT = t;
@@ -754,7 +914,7 @@
         else if (c.format === FORMATS[3] && !(planSpr && !avg)) { const n = Math.ceil(N * TS.r2Pct / 100); extra = { label: "Round 2", n, start: firstEnd }; end = firstEnd + n * spr; }
         if (lv.finishedAt != null) end = lv.finishedAt;
         else if (finished) end = Math.max(end, start);
-        out.cls[c.id] = { start, planned, end, sched, late: sched != null ? start - sched : null, spr, avg, sprDefault: defaultSpr(c.format), startSrc, finished, inProgress, extra, lunch, N, nowIdx, placeholder, schedEnd: parseTime(c.end), planSpr };
+        out.cls[c.id] = { start, planned, end, sched, late: sched != null ? start - sched : null, spr, avg, sprDefault: defaultSpr(c.format), startSrc, finished, inProgress, extra, lunch, N, nowIdx, placeholder, schedEnd: parseTime(c.end), planSpr, fixedSpr: !avg && !planSpr ? fixedSpr : null };
         prevEnd = end; prevGroup = g;
       });
     });
@@ -777,13 +937,13 @@
     show.classes.forEach((c) => c.entries.forEach((e) => {
       const r = R.ent[e.id];
       if (!r || r.state === "scratched" || r.state === "done" || !e.rider) return;
-      (by[norm(e.rider)] = by[norm(e.rider)] || []).push({ e, c, t: r.t });
+      (by[norm(e.rider)] = by[norm(e.rider)] || []).push({ e, c, t: r.t, k: r.t + dayOffset(c) * 86400 });
     }));
     const pairs = []; const ids = new Set();
     Object.values(by).forEach((arr) => {
-      arr.sort((x, y) => x.t - y.t);
+      arr.sort((x, y) => x.k - y.k);
       for (let i = 1; i < arr.length; i++) {
-        if (arr[i].t - arr[i - 1].t < TS.clashMin * 60) { pairs.push([arr[i - 1], arr[i]]); ids.add(arr[i - 1].e.id); ids.add(arr[i].e.id); }
+        if (arr[i].k - arr[i - 1].k < TS.clashMin * 60) { pairs.push([arr[i - 1], arr[i]]); ids.add(arr[i - 1].e.id); ids.add(arr[i].e.id); }
       }
     });
     return { pairs, ids };
@@ -1177,10 +1337,10 @@
     show.classes.forEach((c) => c.entries.forEach((e) => {
       if (stars.riders.includes(norm(e.rider)) || stars.horses.includes(norm(e.horse))) {
         const r = R.ent[e.id] || {};
-        rows.push({ c, e, t: r.t, state: r.state, clash: clashes.ids.has(e.id) });
+        rows.push({ c, e, t: r.t, k: r.t == null ? null : r.t + dayOffset(c) * 86400, state: r.state, clash: clashes.ids.has(e.id) });
       }
     }));
-    rows.sort((a, b) => (a.t == null) - (b.t == null) || a.t - b.t);
+    rows.sort((a, b) => (a.k == null) - (b.k == null) || a.k - b.k);
     return { rows, clashes };
   }
   function planIntro() {
@@ -1767,9 +1927,9 @@
   }
   function tickClock() { $("#clock").textContent = fmt(saNow().sec); }
 
-  function countdown(t, state) {
-    const now = saNow();
-    if (show.date && show.date !== now.date) return "";
+  function countdown(t, state, c) {
+    const now = saNow(); const dd = dayOf(c);
+    if (dd && dd !== now.date) return dd > now.date ? dayLabel(dd) : "";
     if (state === "now") return "jumping now";
     if (state === "done") return "done";
     const d = t - now.sec;
@@ -1843,7 +2003,7 @@
       html += '<div class="k-meta">' + esc(c.name || "") + (c.name ? " · " : "") + esc(SHORT[c.format]) + " · " + r.N + " starting" + (scratched ? " (" + scratched + " scratched)" : "") + (r.sched != null ? " · scheduled " + fmt(r.sched) + (r.schedEnd != null ? "–" + fmt(r.schedEnd) : "") : "") + "</div>";
       html += '<div class="badges">' + badges.join("") + "</div></summary>";
       // live bar
-      const sprInfo = r.avg ? "Using real average " + fmtDur(r.avg.spr) + " per round (from " + r.avg.n + " rounds)" : r.planSpr ? "Using the timetable's plan: " + fmtDur(r.planSpr) + " per horse" : "Using default " + fmtDur(r.sprDefault) + " per round" + (r.startSrc === "actual" ? " · started " + fmt(c.live.startedAt) : "");
+      const sprInfo = r.avg ? "Using real average " + fmtDur(r.avg.spr) + " per round (from " + r.avg.n + " rounds)" : r.planSpr ? "Using the timetable's plan: " + fmtDur(r.planSpr) + " per horse" : r.fixedSpr ? "Using the times printed in the running order (" + fmtDur(r.fixedSpr) + " apart)" : "Using default " + fmtDur(r.sprDefault) + " per round" + (r.startSrc === "actual" ? " · started " + fmt(c.live.startedAt) : "");
       if (canEdit()) html += '<div class="live-bar"><div class="now-in"><label>Now jumping #<input type="text" inputmode="numeric" enterkeyhint="go" data-now="' + c.id + '" placeholder="draw"></label><button type="button" class="btn small primary" data-act="go" data-cls="' + c.id + '">Go</button><button type="button" class="btn small" data-act="next" data-cls="' + c.id + '">Next ▸</button></div>' +
         '<button type="button" class="btn small" data-act="started" data-cls="' + c.id + '">Started</button><button type="button" class="btn small" data-act="finished" data-cls="' + c.id + '">Finished</button>' +
         '<div class="info">' + sprInfo + (hasLive(c) ? ' · <button type="button" class="btn small" data-act="resetlive" data-cls="' + c.id + '">Clear live</button>' : "") + "</div></div>";
@@ -1853,7 +2013,7 @@
         const cls = ["entry", er.state || ""];
         if (clashes.ids.has(e.id)) cls.push("clash");
         if (stars.riders.includes(norm(e.rider)) || stars.horses.includes(norm(e.horse))) cls.push("starred");
-        const cd = er.state === "scratched" ? "" : er.actual && er.state === "done" ? "went in" : countdown(er.t, er.state);
+        const cd = er.state === "scratched" ? "" : er.actual && er.state === "done" ? "went in" : countdown(er.t, er.state, c);
         html += '<li class="' + cls.join(" ") + '" data-cls="' + c.id + '" data-ent="' + e.id + '"><span class="draw">' + esc(e.draw || "–") + '</span><span class="who"><div class="rider">' + esc(e.rider || "?") + '</div><div class="horse">' + esc(e.horse || "") + "</div></span>" +
           '<span class="t">' + (er.state === "scratched" ? "scratched" : fmt(er.t)) + (cd ? "<small>" + cd + "</small>" : "") + "</span></li>";
       });
@@ -1896,7 +2056,8 @@
     show.classes.forEach((c) => c.entries.forEach((e) => {
       if (stars.riders.includes(norm(e.rider)) || stars.horses.includes(norm(e.horse))) mine.push({ c, e, r: R.ent[e.id] || {} });
     }));
-    mine.sort((a, b) => (a.r.t == null) - (b.r.t == null) || a.r.t - b.r.t);
+    const mk = (m) => (m.r.t == null ? null : m.r.t + dayOffset(m.c) * 86400);
+    mine.sort((a, b) => (mk(a) == null) - (mk(b) == null) || mk(a) - mk(b));
     const myClash = clashes.pairs.filter(([a, b]) => mine.some((m) => m.e.id === a.e.id || m.e.id === b.e.id));
     $("#clashList").innerHTML = myClash.length ? '<div class="clash-box"><strong>⚠ Possible clashes (less than ' + S.clashMin + " min apart)</strong><ul>" + myClash.map(([a, b]) =>
       "<li>" + esc(a.e.rider) + ": " + fmt(a.t) + " " + esc(a.c.arena) + " Class " + esc(a.c.no) + " (" + esc(a.e.horse) + ") and " + fmt(b.t) + " " + esc(b.c.arena) + " Class " + esc(b.c.no) + " (" + esc(b.e.horse) + ")</li>").join("") + "</ul></div>" : "";
@@ -1906,7 +2067,7 @@
     }
     $("#mineList").innerHTML = mine.map(({ c, e, r }) => {
       const scr = r.state === "scratched";
-      const cd = scr ? "scratched" : countdown(r.t, r.state);
+      const cd = scr ? "scratched" : countdown(r.t, r.state, c);
       return '<div class="mine-item' + (r.state === "done" || scr ? " past" : "") + (clashes.ids.has(e.id) ? " clash" : "") + '" data-cls="' + c.id + '" data-ent="' + e.id + '"><div><strong>' + esc(e.rider) + "</strong> · " + esc(e.horse) +
         '<div class="muted small">' + esc(c.arena) + " · Class " + esc(c.no) + (c.height ? " " + esc(c.height) : "") + " · draw #" + esc(e.draw) + "</div></div>" +
         '<div class="when"><b>' + (scr ? "–" : fmt(r.t)) + "</b><span>" + esc(cd) + "</span></div></div>";

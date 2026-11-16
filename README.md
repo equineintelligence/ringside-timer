@@ -40,6 +40,9 @@ Show schedules come in many layouts. Ringside Timer handles, with both the free 
 - **Time windows and shared time slots**: when the timetable gives windows, the estimates follow the organiser's own plan (time per horse and changeovers), and live updates take over on the day. Classes sharing one time slot run straight on.
 - **SA Showjumping starting lists** (class details block, height sections, draw numbers, SCR/VET markers); breeding lines and badges are ignored.
 - **Several files at once** (timetable + starting lists), or **add starting lists later**: tap **+ Add schedule / starting lists** on the show's card in the Shows tab. Classes are matched by class number.
+- **Two-day shows** (e.g. Saturday dressage & showing, Sunday showjumping & equitation): each day's arenas are kept separate ("Flying Tiger Arena · Sun 16 Aug"), so Saturday never runs into Sunday, and countdowns only start on the day.
+- **Dressage, equitation and showing classes** are included, because they use arena time too. Where a running order prints each rider's time (dressage), those times are used.
+- **Running orders in any column order** (horse before rider, a draw column labelled "RIDER"), names that wrap onto a second line, and blank numbered rows left for late entries.
 - Show information pages (banking, terms, prizes) are ignored. Duplicate class numbers and starting lists from a different show are flagged for checking.
 
 ## How the times are worked out
